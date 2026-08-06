@@ -16,3 +16,8 @@ video:
 hub:
   upload: true
   repo_id: ${oc.env:OWM_HF_MODEL_REPO,null}
+eval:
+  checkpoint: null       # local path or hf:<org>/<repo>/<path/in/repo.zip>
+  episodes: 20
+  deterministic: true
+  video_path: null       # write an mp4 of the first episode here (needs render extra)
