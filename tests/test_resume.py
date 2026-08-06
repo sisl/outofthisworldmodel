@@ -63,6 +63,37 @@ def test_resume_passes_saved_id_to_wandb(tmp_path: Path, monkeypatch):
     assert captured["resume"] == "must"
 
 
+def test_noop_resume_leaves_final_artifacts_alone(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("WANDB_MODE", "offline")
+    # The 300-step budget is met at the 384-step rollout boundary, but with
+    # save_freq=320 the last checkpoint is at 320. A resume rebuilds the model
+    # from that checkpoint, so saving finals would roll them back 64 steps.
+    run_dir = run_training(smoke_cfg(tmp_path, "ppo", extra=["rl.checkpoint.save_freq=320"]))
+    before = PPO.load(run_dir / FINAL_MODEL, device="cpu").num_timesteps
+    assert PPO.load(latest_checkpoint(run_dir), device="cpu").num_timesteps < before
+    vecnorm_written = (run_dir / FINAL_VECNORM).stat().st_mtime_ns
+
+    run_training(smoke_cfg(tmp_path, "ppo", extra=["resume=true"]))
+
+    assert PPO.load(run_dir / FINAL_MODEL, device="cpu").num_timesteps == before
+    assert (run_dir / FINAL_VECNORM).stat().st_mtime_ns == vecnorm_written
+
+
+def test_resume_writes_finals_a_crash_never_saved(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("WANDB_MODE", "offline")
+    run_dir = run_training(smoke_cfg(tmp_path, "ppo"))
+    # A crash between the last checkpoint and the final save leaves the budget
+    # met with no final artifacts; that resume has to write them, not skip.
+    (run_dir / FINAL_MODEL).unlink()
+    (run_dir / FINAL_VECNORM).unlink()
+    checkpoint_steps = PPO.load(latest_checkpoint(run_dir), device="cpu").num_timesteps
+
+    run_training(smoke_cfg(tmp_path, "ppo", extra=["resume=true"]))
+
+    assert PPO.load(run_dir / FINAL_MODEL, device="cpu").num_timesteps == checkpoint_steps
+    assert (run_dir / FINAL_VECNORM).exists()
+
+
 def test_resume_refuses_checkpoint_without_vecnormalize(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("WANDB_MODE", "offline")
     run_dir = run_training(smoke_cfg(tmp_path, "ppo"))

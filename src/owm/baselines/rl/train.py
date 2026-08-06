@@ -152,8 +152,17 @@ def run_training(cfg: DictConfig) -> Path:
             reset_num_timesteps=ckpt is None,
         )
 
-    model.save(run_dir / FINAL_MODEL)
-    venv.save(str(run_dir / FINAL_VECNORM))
+    # This model was rebuilt from the latest checkpoint, which trails whatever
+    # the finished leg saved as final: a re-issued resume (a requeued job, say)
+    # would otherwise roll the finals back to the last checkpoint boundary.
+    # Absent finals still have to be written — a crash between the last
+    # checkpoint and the final save leaves the budget met but nothing final.
+    if remaining == 0 and (run_dir / FINAL_MODEL).exists():
+        print(f"budget already met; final artifacts in {run_dir} left untouched")
+    else:
+        model.save(run_dir / FINAL_MODEL)
+        venv.save(str(run_dir / FINAL_VECNORM))
+
     venv.close()
     wandb.finish()
     return run_dir
