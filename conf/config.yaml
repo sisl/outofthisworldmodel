@@ -8,3 +8,11 @@ run_name: ${rl.algo}_${now:%Y%m%d_%H%M%S}
 run_dir: runs/${run_name}
 resume: false
 seed: 0
+
+video:
+  enabled: false
+  every_steps: 250000
+  max_frames: 1200      # 60 s at render_fps=20
+hub:
+  upload: true
+  repo_id: ${oc.env:OWM_HF_MODEL_REPO,null}

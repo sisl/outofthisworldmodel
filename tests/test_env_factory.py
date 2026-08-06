@@ -71,7 +71,5 @@ def test_iss_config_from_dataset_matches_main_repo():
 
 def test_from_dataset_environments_group_composes():
     with initialize_config_dir(config_dir=CONF_DIR, version_base="1.3"):
-        cfg = compose(
-            config_name="config", overrides=["~rl", "environments=from_dataset"]
-        )
+        cfg = compose(config_name="config", overrides=["environments=from_dataset"])
     assert cfg.environments.from_dataset_repo == "sislaboratory/owm-iss-coop-goal-dt50ms"

@@ -1,0 +1,14 @@
+algo: ppo
+n_envs: 8
+vec: subproc
+total_timesteps: 5000000
+device: cpu          # SB3 PPO+MlpPolicy is faster on CPU
+checkpoint:
+  save_freq: 100000  # total env steps between checkpoints
+hyperparams:
+  n_steps: 2048
+  batch_size: 512
+  learning_rate: 3.0e-4
+  gamma: 0.999       # dt=50 ms; 0.99 would myopically discount ~5 s
+  gae_lambda: 0.95
+  ent_coef: 0.0
