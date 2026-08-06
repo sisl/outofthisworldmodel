@@ -17,6 +17,7 @@ from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.vec_env import VecNormalize
 
+from owm.baselines.rl.hub import upload_run
 from owm.baselines.rl.run_state import (
     CHECKPOINT_DIR,
     FINAL_MODEL,
@@ -165,14 +166,30 @@ def run_training(cfg: DictConfig) -> Path:
     # would otherwise roll the finals back to the last checkpoint boundary.
     # Absent finals still have to be written — a crash between the last
     # checkpoint and the final save leaves the budget met but nothing final.
-    if remaining == 0 and (run_dir / FINAL_MODEL).exists():
-        print(f"budget already met; final artifacts in {run_dir} left untouched")
-    else:
-        model.save(run_dir / FINAL_MODEL)
-        venv.save(str(run_dir / FINAL_VECNORM))
+    # venv/wandb cleanup must run even if artifact logging or the hub upload
+    # raises (e.g. a network error), or the run's env leaks and its wandb
+    # history is never flushed; the exception still propagates after cleanup.
+    try:
+        if remaining == 0 and (run_dir / FINAL_MODEL).exists():
+            print(
+                f"budget already met; final artifacts in {run_dir} left untouched, "
+                "wandb artifact log and hub upload skipped"
+            )
+        else:
+            model.save(run_dir / FINAL_MODEL)
+            venv.save(str(run_dir / FINAL_VECNORM))
 
-    venv.close()
-    wandb.finish()
+            artifact = wandb.Artifact(name=f"{run_dir.name}-model", type="model")
+            artifact.add_file(str(run_dir / FINAL_MODEL))
+            artifact.add_file(str(run_dir / FINAL_VECNORM))
+            wandb.log_artifact(artifact)
+            if cfg.hub.upload and cfg.hub.repo_id:
+                url = upload_run(run_dir, cfg.hub.repo_id)
+                print(f"[hub] uploaded final model: {url}")
+    finally:
+        venv.close()
+        wandb.finish()
+
     return run_dir
 
 

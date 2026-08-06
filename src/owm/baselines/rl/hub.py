@@ -1,0 +1,25 @@
+"""Upload a finished RL run's model to the Hugging Face Hub."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from huggingface_hub import HfApi
+
+from owm.baselines.rl.run_state import FINAL_MODEL, FINAL_VECNORM
+
+_UPLOAD_FILES = (FINAL_MODEL, FINAL_VECNORM, "config.yaml")
+
+
+def upload_run(run_dir: Path, repo_id: str) -> str:
+    api = HfApi()  # token from HF_TOKEN or the local login
+    api.create_repo(repo_id, repo_type="model", private=True, exist_ok=True)
+    api.upload_folder(
+        repo_id=repo_id,
+        repo_type="model",
+        folder_path=str(run_dir),
+        path_in_repo=f"rl/{run_dir.name}",
+        allow_patterns=list(_UPLOAD_FILES),
+        commit_message=f"Upload RL run {run_dir.name}",
+    )
+    return f"https://huggingface.co/{repo_id}/tree/main/rl/{run_dir.name}"
