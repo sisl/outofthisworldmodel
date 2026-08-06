@@ -120,8 +120,15 @@ def run_training(cfg: DictConfig) -> Path:
         )
     ]
 
+    # rl.total_timesteps is the run's total budget, but SB3 adds the restored
+    # counter to whatever it is given when reset_num_timesteps=False, so a
+    # resumed leg must ask only for the steps still outstanding.
+    remaining = int(cfg.rl.total_timesteps)
+    if ckpt is not None:
+        remaining = max(remaining - model.num_timesteps, 0)
+
     model.learn(
-        total_timesteps=cfg.rl.total_timesteps,
+        total_timesteps=remaining,
         callback=callbacks,
         reset_num_timesteps=ckpt is None,
     )
