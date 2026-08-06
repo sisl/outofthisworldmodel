@@ -94,6 +94,22 @@ def test_resume_writes_finals_a_crash_never_saved(tmp_path: Path, monkeypatch):
     assert (run_dir / FINAL_VECNORM).exists()
 
 
+def test_resume_recreates_finals_if_vecnormalize_missing(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("WANDB_MODE", "offline")
+    run_dir = run_training(smoke_cfg(tmp_path, "ppo"))
+    model_steps = PPO.load(run_dir / FINAL_MODEL, device="cpu").num_timesteps
+    # A crash between model.save() and venv.save() leaves final_model.zip
+    # present but vecnormalize.pkl missing; the skip-gate has to require both
+    # finals, not just FINAL_MODEL, or this resume would declare the run done
+    # without ever writing vecnormalize.pkl or re-publishing.
+    (run_dir / FINAL_VECNORM).unlink()
+
+    run_training(smoke_cfg(tmp_path, "ppo", extra=["resume=true"]))
+
+    assert PPO.load(run_dir / FINAL_MODEL, device="cpu").num_timesteps == model_steps
+    assert (run_dir / FINAL_VECNORM).exists()
+
+
 def test_resume_refuses_checkpoint_without_vecnormalize(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("WANDB_MODE", "offline")
     run_dir = run_training(smoke_cfg(tmp_path, "ppo"))

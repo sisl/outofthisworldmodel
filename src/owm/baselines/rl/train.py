@@ -170,7 +170,8 @@ def run_training(cfg: DictConfig) -> Path:
     # raises (e.g. a network error), or the run's env leaks and its wandb
     # history is never flushed; the exception still propagates after cleanup.
     try:
-        if remaining == 0 and (run_dir / FINAL_MODEL).exists():
+        finals_exist = (run_dir / FINAL_MODEL).exists() and (run_dir / FINAL_VECNORM).exists()
+        if remaining == 0 and finals_exist:
             print(
                 f"budget already met; final artifacts in {run_dir} left untouched, "
                 "wandb artifact log and hub upload skipped"

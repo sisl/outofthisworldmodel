@@ -1,7 +1,16 @@
-"""Upload a finished RL run's model to the Hugging Face Hub."""
+"""Upload a finished RL run's model to the Hugging Face Hub.
+
+train.py publishes automatically at the end of a run; if that publish step
+failed or was skipped, republish it manually:
+
+    python -m owm.baselines.rl.hub runs/ppo_a
+    python -m owm.baselines.rl.hub runs/ppo_a my-org/my-model
+"""
 
 from __future__ import annotations
 
+import argparse
+import os
 from pathlib import Path
 
 from huggingface_hub import HfApi
@@ -23,3 +32,22 @@ def upload_run(run_dir: Path, repo_id: str) -> str:
         commit_message=f"Upload RL run {run_dir.name}",
     )
     return f"https://huggingface.co/{repo_id}/tree/main/rl/{run_dir.name}"
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Publish a finished RL run's finals to the HF Hub.")
+    parser.add_argument("run_dir", type=Path, help="run directory, e.g. runs/ppo_a")
+    parser.add_argument(
+        "repo_id",
+        nargs="?",
+        default=os.environ.get("OWM_HF_MODEL_REPO"),
+        help="HF model repo id; defaults to $OWM_HF_MODEL_REPO",
+    )
+    args = parser.parse_args()
+    if not args.repo_id:
+        parser.error("repo_id not given and OWM_HF_MODEL_REPO is not set")
+    print(upload_run(args.run_dir, args.repo_id))
+
+
+if __name__ == "__main__":
+    main()
