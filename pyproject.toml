@@ -2,7 +2,9 @@
 name = "owm"
 version = "0.1.0"
 description = "Out of this World Model: reference architectures and baselines for the OWM ISS environments"
-requires-python = ">=3.11"
+# Capped below 3.14: its argparse eagerly validates help strings and rejects
+# hydra 1.3.x's lazy --shell-completion help object, killing every hydra CLI.
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "owm-envs[render]",
     "stable-baselines3>=2.4",
