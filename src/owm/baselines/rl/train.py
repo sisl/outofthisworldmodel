@@ -54,7 +54,7 @@ def run_training(cfg: DictConfig) -> Path:
         # Refuse to write a second run's config and id over an existing run's,
         # which would leave the dir describing one run and holding another's
         # checkpoints.
-        if load_wandb_id(run_dir) is not None:
+        if run_dir.exists() and any(run_dir.iterdir()):
             raise SystemExit(
                 f"run_dir {run_dir} already contains a run; pass resume=true to "
                 "continue it or choose a new run_dir"
@@ -69,6 +69,25 @@ def run_training(cfg: DictConfig) -> Path:
         run_id = wandb.util.generate_id()
         save_wandb_id(run_dir, run_id)
 
+    # No ckpt means the run crashed before its first checkpoint: there is no
+    # training state to lose, so it restarts from scratch under the same wandb
+    # id and keeps its history attached.
+    ckpt = latest_checkpoint(run_dir) if resume else None
+    if ckpt is not None:
+        # CheckpointCallback writes both siblings alongside every checkpoint, so
+        # a missing one means a damaged run dir. Substituting a fresh one would
+        # corrupt the resumed run rather than fail it.
+        if vecnormalize_for(ckpt) is None:
+            raise SystemExit(
+                f"{ckpt} has no vecnormalize sibling; resuming would run a trained "
+                "policy against fresh normalization statistics"
+            )
+        if cfg.rl.algo == "sac" and replay_buffer_for(ckpt) is None:
+            raise SystemExit(
+                f"{ckpt} has no replay_buffer sibling; resuming SAC would restart "
+                "from an empty buffer"
+            )
+
     wandb.init(
         id=run_id,
         resume="must" if resume else None,
@@ -82,9 +101,8 @@ def run_training(cfg: DictConfig) -> Path:
     )
 
     venv = make_vec_env(cfg.environments, cfg.rl.n_envs, cfg.seed, vec=cfg.rl.vec)
-    ckpt = latest_checkpoint(run_dir) if resume else None
-    if ckpt is not None and (stats := vecnormalize_for(ckpt)) is not None:
-        venv = VecNormalize.load(str(stats), venv)
+    if ckpt is not None:
+        venv = VecNormalize.load(str(vecnormalize_for(ckpt)), venv)
     else:
         # Position obs are O(100 m) while rates are O(1e-3); normalization is
         # load-bearing. Reward normalization also tames the -1e6 collision spike.
@@ -97,8 +115,8 @@ def run_training(cfg: DictConfig) -> Path:
         model = algo_cls.load(
             ckpt, env=venv, device=cfg.rl.device, tensorboard_log=str(run_dir / "tb")
         )
-        if (buf := replay_buffer_for(ckpt)) is not None:
-            model.load_replay_buffer(buf)
+        if cfg.rl.algo == "sac":
+            model.load_replay_buffer(replay_buffer_for(ckpt))
     else:
         model = algo_cls(
             "MlpPolicy",
@@ -127,11 +145,12 @@ def run_training(cfg: DictConfig) -> Path:
     if ckpt is not None:
         remaining = max(remaining - model.num_timesteps, 0)
 
-    model.learn(
-        total_timesteps=remaining,
-        callback=callbacks,
-        reset_num_timesteps=ckpt is None,
-    )
+    if remaining > 0:
+        model.learn(
+            total_timesteps=remaining,
+            callback=callbacks,
+            reset_num_timesteps=ckpt is None,
+        )
 
     model.save(run_dir / FINAL_MODEL)
     venv.save(str(run_dir / FINAL_VECNORM))

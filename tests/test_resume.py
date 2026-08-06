@@ -5,11 +5,14 @@ from conftest import smoke_cfg
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.save_util import load_from_pkl
 
+from owm.baselines.rl import train
 from owm.baselines.rl.run_state import (
     FINAL_MODEL,
+    FINAL_VECNORM,
     latest_checkpoint,
     load_wandb_id,
     replay_buffer_for,
+    vecnormalize_for,
 )
 from owm.baselines.rl.train import run_training
 
@@ -20,6 +23,7 @@ def test_resume_continues_same_run(tmp_path: Path, monkeypatch):
     run_dir = run_training(cfg)
     first_id = load_wandb_id(run_dir)
     assert first_id is not None
+    seen_before = load_from_pkl(vecnormalize_for(latest_checkpoint(run_dir))).obs_rms.count
 
     cfg2 = smoke_cfg(tmp_path, "ppo", extra=["resume=true", "rl.total_timesteps=600"])
     run_dir2 = run_training(cfg2)
@@ -37,6 +41,35 @@ def test_resume_continues_same_run(tmp_path: Path, monkeypatch):
     # rather than training a second full budget on top of the first leg.
     rollout = 64 * 2  # n_steps * n_envs
     assert 600 <= model.num_timesteps < 600 + rollout
+    # Normalization kept accumulating over the checkpoint's statistics instead
+    # of restarting from an empty running mean.
+    assert load_from_pkl(run_dir / FINAL_VECNORM).obs_rms.count >= seen_before
+
+
+def test_resume_passes_saved_id_to_wandb(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("WANDB_MODE", "offline")
+    run_dir = run_training(smoke_cfg(tmp_path, "ppo"))
+    saved_id = load_wandb_id(run_dir)
+
+    captured = {}
+    monkeypatch.setattr(train.wandb, "init", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.setattr(train.wandb, "finish", lambda: None)
+    # The first leg already spent the budget, so this resume has nothing left to
+    # train and stops before learn() — it exercises the reattach and the
+    # already-finished no-op together.
+    run_training(smoke_cfg(tmp_path, "ppo", extra=["resume=true"]))
+
+    assert captured["id"] == saved_id
+    assert captured["resume"] == "must"
+
+
+def test_resume_refuses_checkpoint_without_vecnormalize(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("WANDB_MODE", "offline")
+    run_dir = run_training(smoke_cfg(tmp_path, "ppo"))
+    vecnormalize_for(latest_checkpoint(run_dir)).unlink()
+
+    with pytest.raises(SystemExit, match="vecnormalize sibling"):
+        run_training(smoke_cfg(tmp_path, "ppo", extra=["resume=true"]))
 
 
 def test_sac_resume_reloads_replay_buffer(tmp_path: Path, monkeypatch):
@@ -54,6 +87,12 @@ def test_sac_resume_reloads_replay_buffer(tmp_path: Path, monkeypatch):
     filled_after = load_from_pkl(replay_buffer_for(latest_checkpoint(run_dir))).pos
     assert filled_after > filled_before
 
+    # Resuming SAC from a checkpoint whose buffer went missing would silently
+    # restart from an empty one, so it has to fail instead.
+    replay_buffer_for(latest_checkpoint(run_dir)).unlink()
+    with pytest.raises(SystemExit, match="replay_buffer sibling"):
+        run_training(smoke_cfg(tmp_path, "sac", extra=["resume=true", "rl.total_timesteps=800"]))
+
 
 def test_resume_before_first_checkpoint(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("WANDB_MODE", "offline")
@@ -69,6 +108,6 @@ def test_fresh_run_refuses_existing_run_dir(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("WANDB_MODE", "offline")
     run_dir = run_training(smoke_cfg(tmp_path, "ppo"))
     first_id = load_wandb_id(run_dir)
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit, match="already contains a run"):
         run_training(smoke_cfg(tmp_path, "ppo"))  # same run dir, resume not set
     assert load_wandb_id(run_dir) == first_id  # the existing run is untouched
