@@ -1,0 +1,4 @@
+# Derive the ISSConfig from a dataset's shipped as-run env_config.yaml
+# instead of the committed inline config: environments=from_dataset
+# [environments.from_dataset_repo=<org/name>]
+from_dataset_repo: ${oc.env:OWM_HF_DATASET_REPO,sislaboratory/owm-iss-coop-goal-dt50ms}
