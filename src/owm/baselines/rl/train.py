@@ -2,6 +2,7 @@
 
     python -m owm.baselines.rl.train rl=ppo
     python -m owm.baselines.rl.train rl=sac run_dir=runs/sac_a seed=1
+    python -m owm.baselines.rl.train run_dir=runs/sac_a resume=true
 """
 
 from __future__ import annotations
@@ -21,7 +22,11 @@ from owm.baselines.rl.run_state import (
     FINAL_MODEL,
     FINAL_VECNORM,
     NAME_PREFIX,
+    latest_checkpoint,
+    load_wandb_id,
+    replay_buffer_for,
     save_wandb_id,
+    vecnormalize_for,
 )
 from owm.envs.factory import make_vec_env
 
@@ -32,17 +37,41 @@ ALGOS = {"ppo": PPO, "sac": SAC}
 
 def run_training(cfg: DictConfig) -> Path:
     run_dir = Path(cfg.run_dir)
-    run_dir.mkdir(parents=True, exist_ok=True)
-    # Save resolved, not raw: ${now:...} and ${oc.env:...} would re-resolve to
-    # different values when a resume reloads this file.
-    OmegaConf.save(
-        OmegaConf.create(OmegaConf.to_container(cfg, resolve=True)), run_dir / "config.yaml"
-    )
+    resume = bool(cfg.resume)
 
-    run_id = wandb.util.generate_id()
-    save_wandb_id(run_dir, run_id)
+    if resume:
+        # The run's own saved config is authoritative: hyperparameters cannot
+        # silently diverge from the ones the checkpoint was trained under. Only
+        # a raised step budget carries over from the command line.
+        saved = OmegaConf.load(run_dir / "config.yaml")
+        saved.resume = True
+        saved.rl.total_timesteps = max(int(saved.rl.total_timesteps), int(cfg.rl.total_timesteps))
+        cfg = saved
+
+        run_id = load_wandb_id(run_dir)
+        assert run_id is not None, f"resume=true but {run_dir} has no wandb_run_id.txt"
+    else:
+        # Refuse to write a second run's config and id over an existing run's,
+        # which would leave the dir describing one run and holding another's
+        # checkpoints.
+        if load_wandb_id(run_dir) is not None:
+            raise SystemExit(
+                f"run_dir {run_dir} already contains a run; pass resume=true to "
+                "continue it or choose a new run_dir"
+            )
+        run_dir.mkdir(parents=True, exist_ok=True)
+        # Save resolved, not raw: ${now:...} and ${oc.env:...} would re-resolve to
+        # different values when a resume reloads this file.
+        OmegaConf.save(
+            OmegaConf.create(OmegaConf.to_container(cfg, resolve=True)), run_dir / "config.yaml"
+        )
+
+        run_id = wandb.util.generate_id()
+        save_wandb_id(run_dir, run_id)
+
     wandb.init(
         id=run_id,
+        resume="must" if resume else None,
         entity=cfg.logging.entity,
         project=cfg.logging.project,
         mode=cfg.logging.mode,
@@ -53,21 +82,32 @@ def run_training(cfg: DictConfig) -> Path:
     )
 
     venv = make_vec_env(cfg.environments, cfg.rl.n_envs, cfg.seed, vec=cfg.rl.vec)
-    # Position obs are O(100 m) while rates are O(1e-3); normalization is
-    # load-bearing. Reward normalization also tames the -1e6 collision spike.
-    venv = VecNormalize(
-        venv, norm_obs=True, norm_reward=True, clip_obs=10.0, gamma=cfg.rl.hyperparams.gamma
-    )
+    ckpt = latest_checkpoint(run_dir) if resume else None
+    if ckpt is not None and (stats := vecnormalize_for(ckpt)) is not None:
+        venv = VecNormalize.load(str(stats), venv)
+    else:
+        # Position obs are O(100 m) while rates are O(1e-3); normalization is
+        # load-bearing. Reward normalization also tames the -1e6 collision spike.
+        venv = VecNormalize(
+            venv, norm_obs=True, norm_reward=True, clip_obs=10.0, gamma=cfg.rl.hyperparams.gamma
+        )
 
     algo_cls = ALGOS[cfg.rl.algo]
-    model = algo_cls(
-        "MlpPolicy",
-        venv,
-        seed=cfg.seed,
-        device=cfg.rl.device,
-        tensorboard_log=str(run_dir / "tb"),
-        **OmegaConf.to_container(cfg.rl.hyperparams, resolve=True),
-    )
+    if ckpt is not None:
+        model = algo_cls.load(
+            ckpt, env=venv, device=cfg.rl.device, tensorboard_log=str(run_dir / "tb")
+        )
+        if (buf := replay_buffer_for(ckpt)) is not None:
+            model.load_replay_buffer(buf)
+    else:
+        model = algo_cls(
+            "MlpPolicy",
+            venv,
+            seed=cfg.seed,
+            device=cfg.rl.device,
+            tensorboard_log=str(run_dir / "tb"),
+            **OmegaConf.to_container(cfg.rl.hyperparams, resolve=True),
+        )
 
     callbacks = [
         CheckpointCallback(
@@ -83,7 +123,7 @@ def run_training(cfg: DictConfig) -> Path:
     model.learn(
         total_timesteps=cfg.rl.total_timesteps,
         callback=callbacks,
-        reset_num_timesteps=True,
+        reset_num_timesteps=ckpt is None,
     )
 
     model.save(run_dir / FINAL_MODEL)
