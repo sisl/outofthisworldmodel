@@ -1,0 +1,10 @@
+defaults:
+  - environments: iss_coop_goal
+  - rl: ppo
+  - logging: wandb
+  - _self_
+
+run_name: ${rl.algo}_${now:%Y%m%d_%H%M%S}
+run_dir: runs/${run_name}
+resume: false
+seed: 0

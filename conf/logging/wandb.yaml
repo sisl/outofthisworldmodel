@@ -1,0 +1,3 @@
+entity: ${oc.env:WANDB_ENTITY,null}
+project: ${oc.env:WANDB_PROJECT,owm}
+mode: ${oc.env:WANDB_MODE,online}

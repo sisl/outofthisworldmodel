@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# local secrets and run outputs
+.env
+runs/
+outputs/
+multirun/
+wandb/
