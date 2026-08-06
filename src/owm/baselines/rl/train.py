@@ -28,6 +28,7 @@ from owm.baselines.rl.run_state import (
     save_wandb_id,
     vecnormalize_for,
 )
+from owm.baselines.rl.video import VideoEvalCallback
 from owm.envs.factory import make_vec_env
 
 load_dotenv()
@@ -137,6 +138,13 @@ def run_training(cfg: DictConfig) -> Path:
             save_vecnormalize=True,
         )
     ]
+    if cfg.video.enabled:
+        callbacks.append(VideoEvalCallback(
+            env_conf=OmegaConf.to_container(cfg.environments, resolve=True),
+            every_steps=cfg.video.every_steps,
+            max_frames=cfg.video.max_frames,
+            seed=cfg.seed + 10_000,  # never the training seeds
+        ))
 
     # rl.total_timesteps is the run's total budget, but SB3 adds the restored
     # counter to whatever it is given when reset_num_timesteps=False, so a
