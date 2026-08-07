@@ -21,3 +21,4 @@ eval:
   episodes: 20
   deterministic: true
   video_path: null       # write an mp4 of the first episode here (needs render extra)
+  allow_unnormalized: false  # evaluate on raw obs when no VecNormalize stats exist

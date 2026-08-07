@@ -45,6 +45,18 @@ def latest_checkpoint(run_dir: Path) -> Path | None:
     return best[1] if best else None
 
 
+def vecnormalize_name_for(ckpt_name: str) -> str | None:
+    """Name of the VecNormalize pickle that belongs beside a model zip.
+
+    Name-only, so a remote checkpoint can be resolved to its sibling before
+    either file exists locally.
+    """
+    if ckpt_name == FINAL_MODEL:
+        return FINAL_VECNORM
+    match = _STEP_RE.match(ckpt_name)
+    return f"{NAME_PREFIX}_vecnormalize_{match.group(1)}_steps.pkl" if match else None
+
+
 def _sibling(ckpt: Path, kind: str) -> Path | None:
     match = _STEP_RE.match(ckpt.name)
     if match is None:
