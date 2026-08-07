@@ -8,6 +8,8 @@ import os
 # CPU so env workers never grab GPU memory (an explicit JAX_PLATFORMS wins).
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
+from typing import TYPE_CHECKING
+
 import gymnasium as gym
 import torch
 from gymnasium.wrappers import RescaleAction
@@ -18,9 +20,17 @@ from owm_envs.envs.iss.env import ISSEnv
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv
 
-from owm.envs.resnet_obs import FrozenResnetExtractor, ResnetObservationWrapper
+if TYPE_CHECKING:
+    from owm.envs.resnet_obs import FrozenResnetExtractor
 
 OBS_MODES = ("vector", "vector_resnet")
+
+# owm.envs.resnet_obs is imported inside the vector_resnet branches below
+# rather than here, which is the one sanctioned exception to imports-at-top in
+# this package: it pulls in torchvision, and this module is on the critical
+# path of every env worker of every run. A vector run has no use for it, and a
+# torch pin bumped past its matching torchvision would otherwise stop all
+# training rather than just the mode that needs the network.
 
 
 def iss_config_from_dataset(repo_id: str, revision: str | None = None) -> ISSConfig:
@@ -57,6 +67,8 @@ def make_iss_env(
     needs_frames = render or obs_mode == "vector_resnet"
     env = ISSEnv(cfg, render_mode="rgb_array" if needs_frames else None)
     if obs_mode == "vector_resnet":
+        from owm.envs.resnet_obs import ResnetObservationWrapper
+
         env = ResnetObservationWrapper(env, extractor)
     # SB3's Gaussian (PPO) samples in raw action units; +-1600 N would need an
     # absurd init std, so policies act in [-1, 1] and the wrapper rescales.
@@ -93,6 +105,8 @@ def make_vec_env(
                     torch.set_num_threads(1)
                 # Built inside the worker: a torch module cannot cross a spawn
                 # boundary, and each worker embeds only its own frames anyway.
+                from owm.envs.resnet_obs import FrozenResnetExtractor
+
                 extractor = FrozenResnetExtractor(**(resnet or {}))
             return make_iss_env(
                 iss_config(conf_dict),

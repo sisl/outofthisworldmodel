@@ -42,7 +42,6 @@ from owm.baselines.rl.run_state import (
 )
 from owm.baselines.rl.video import VideoEvalCallback
 from owm.envs.factory import iss_config, make_vec_env
-from owm.envs.resnet_obs import extractor_kwargs
 
 load_dotenv()
 
@@ -218,13 +217,22 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
     # each would otherwise re-download it, and could disagree about the result.
     env_conf = iss_cfg.model_dump(mode="json")
 
+    resnet = None
+    if obs_mode == "vector_resnet":
+        # Imported here, not at the top: owm.envs.resnet_obs pulls in
+        # torchvision, and a vector run has no use for it. See the note in
+        # owm/envs/factory.py.
+        from owm.envs.resnet_obs import extractor_kwargs
+
+        resnet = extractor_kwargs(cfg.rl)
+
     venv = make_vec_env(
         env_conf,
         cfg.rl.n_envs,
         cfg.seed,
         vec=cfg.rl.vec,
         obs_mode=obs_mode,
-        resnet=extractor_kwargs(cfg.rl) if obs_mode == "vector_resnet" else None,
+        resnet=resnet,
     )
     if source is not None:
         venv = VecNormalize.load(str(source_vecnorm), venv)
