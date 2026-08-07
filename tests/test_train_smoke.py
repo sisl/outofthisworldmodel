@@ -5,7 +5,7 @@ from conftest import smoke_cfg
 
 from owm_envs.envs.iss.config import ISSConfig
 
-from owm.baselines.rl import train
+from owm.baselines.rl import metrics, train
 from owm.baselines.rl.run_state import (
     CHECKPOINT_DIR,
     FINAL_MODEL,
@@ -46,6 +46,38 @@ def test_train_smoke(tmp_path: Path, algo: str, monkeypatch):
     # The env the run actually trained on, spelled out: environments=
     # from_dataset would otherwise leave only a repo name behind.
     assert ISSConfig.from_yaml(run_dir / "env_config.yaml").dt == 0.05
+
+
+def test_docking_metrics_logged_during_training(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("WANDB_MODE", "offline")
+    calls: list[dict] = []
+    real_init = train.wandb.init
+
+    def init_and_capture(*args, **kwargs):
+        # wandb.init() rebinds the module-level wandb.log to the new run's
+        # bound method, so a monkeypatch applied before it is silently
+        # overwritten; wrap log only once the real run object exists.
+        run = real_init(*args, **kwargs)
+        real_log = metrics.wandb.log
+        monkeypatch.setattr(
+            metrics.wandb, "log",
+            lambda payload: (calls.append(payload), real_log(payload))[1],
+        )
+        return run
+
+    monkeypatch.setattr(train.wandb, "init", init_and_capture)
+
+    # A short max_steps forces episodes to truncate within the smoke budget
+    # instead of relying on a random policy stumbling into a collision.
+    run_training(smoke_cfg(tmp_path, "ppo", extra=[
+        "environments=iss_coop_goal_ports",
+        "environments.max_steps=5",
+    ]))
+
+    docking_calls = [call for call in calls if "docking/episodes" in call]
+    assert docking_calls
+    assert docking_calls[-1]["docking/episodes"] > 0
+    assert docking_calls[-1]["docking/truncated_rate"] > 0
 
 
 def test_workers_get_the_resolved_env_not_the_dataset_ref(tmp_path: Path, monkeypatch):

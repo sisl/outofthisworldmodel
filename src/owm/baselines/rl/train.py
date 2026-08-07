@@ -20,6 +20,7 @@ from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.vec_env import VecNormalize
 
 from owm.baselines.rl.hub import upload_run
+from owm.baselines.rl.metrics import DockingMetricsCallback
 from owm.baselines.rl.run_state import (
     CHECKPOINT_DIR,
     FINAL_MODEL,
@@ -233,6 +234,7 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
         )
 
     callbacks = [
+        DockingMetricsCallback(),
         CheckpointCallback(
             # SB3 counts save_freq in per-env steps; divide to get total steps
             save_freq=max(cfg.rl.checkpoint.save_freq // cfg.rl.n_envs, 1),
