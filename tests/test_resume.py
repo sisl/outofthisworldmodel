@@ -8,8 +8,12 @@ from stable_baselines3.common.save_util import load_from_pkl
 
 from owm.baselines.rl import train
 from owm.baselines.rl.run_state import (
+    CHECKPOINT_DIR,
     FINAL_MODEL,
+    FINAL_REPLAY_BUFFER,
+    FINAL_STEPS,
     FINAL_VECNORM,
+    checkpoint_steps,
     latest_checkpoint,
     load_wandb_id,
     replay_buffer_for,
@@ -20,6 +24,33 @@ from owm.baselines.rl.train import run_training
 
 def _refuse_to_train(self, *, total_timesteps, **kwargs):
     raise AssertionError(f"resume asked for {total_timesteps} more steps")
+
+
+def _spy_on_loads(monkeypatch, algo) -> list[Path]:
+    """Record what the resumed model is rebuilt from, still loading for real."""
+    loaded: list[Path] = []
+    original = algo.load
+
+    def spy(path, *args, **kwargs):
+        loaded.append(Path(path))
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(algo, "load", spy)
+    return loaded
+
+
+def _drop_finals(run_dir: Path) -> None:
+    """Leave the run looking like a crash before its final save."""
+    for name in (FINAL_MODEL, FINAL_VECNORM, FINAL_REPLAY_BUFFER, FINAL_STEPS):
+        (run_dir / name).unlink(missing_ok=True)
+
+
+def _keep_only_newest_checkpoint(run_dir: Path) -> Path:
+    newest = latest_checkpoint(run_dir)
+    for path in (run_dir / CHECKPOINT_DIR).iterdir():
+        if f"_{checkpoint_steps(newest)}_steps." not in path.name:
+            path.unlink()
+    return newest
 
 
 def bare_resume_cfg(run_dir: Path):
@@ -117,6 +148,56 @@ def test_noop_resume_leaves_final_artifacts_alone(tmp_path: Path, monkeypatch):
     assert (run_dir / FINAL_VECNORM).stat().st_mtime_ns == vecnorm_written
 
 
+def test_extending_a_finished_run_starts_from_its_finals(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("WANDB_MODE", "offline")
+    # save_freq=320 against a 384-step rollout boundary leaves the finals ahead
+    # of the last checkpoint. Rebuilding from that checkpoint would silently
+    # drop the steps the finished run had already trained and published.
+    run_dir = run_training(smoke_cfg(tmp_path, "ppo", extra=["rl.checkpoint.save_freq=320"]))
+    final_steps = PPO.load(run_dir / FINAL_MODEL, device="cpu").num_timesteps
+    assert PPO.load(latest_checkpoint(run_dir), device="cpu").num_timesteps < final_steps
+
+    loaded = _spy_on_loads(monkeypatch, PPO)
+    run_training(smoke_cfg(tmp_path, "ppo", extra=["resume=true", "extend_timesteps=600"]))
+    assert loaded == [run_dir / FINAL_MODEL]
+
+    extended = PPO.load(run_dir / FINAL_MODEL, device="cpu").num_timesteps
+    assert 600 <= extended < 600 + 64 * 2  # n_steps * n_envs
+
+
+def test_resume_falls_back_to_the_last_complete_checkpoint(
+    tmp_path: Path, monkeypatch, capsys
+):
+    monkeypatch.setenv("WANDB_MODE", "offline")
+    run_dir = run_training(smoke_cfg(tmp_path, "ppo"))
+    _drop_finals(run_dir)
+    # A kill between the newest checkpoint's zip and its siblings leaves that
+    # checkpoint unusable, but the one before it is intact: resuming from it
+    # costs one interval of re-training, where failing costs the whole run.
+    ckpts = sorted((run_dir / CHECKPOINT_DIR).glob("model_*_steps.zip"), key=checkpoint_steps)
+    newest, fallback = ckpts[-1], ckpts[-2]
+    vecnormalize_for(newest).unlink()
+
+    loaded = _spy_on_loads(monkeypatch, PPO)
+    run_training(smoke_cfg(tmp_path, "ppo", extra=["resume=true"]))
+
+    assert loaded == [fallback]
+    warning = capsys.readouterr().out
+    assert newest.name in warning and "vecnormalize sibling" in warning
+
+
+def test_resume_refuses_when_every_checkpoint_is_incomplete(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("WANDB_MODE", "offline")
+    run_dir = run_training(smoke_cfg(tmp_path, "ppo"))
+    _drop_finals(run_dir)
+    vecnormalize_for(_keep_only_newest_checkpoint(run_dir)).unlink()
+
+    # Only a run dir with no checkpoints at all may restart from scratch under
+    # the same wandb id; one that has trained state it cannot read must stop.
+    with pytest.raises(SystemExit, match="vecnormalize sibling"):
+        run_training(smoke_cfg(tmp_path, "ppo", extra=["resume=true"]))
+
+
 def test_resume_writes_finals_a_crash_never_saved(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("WANDB_MODE", "offline")
     run_dir = run_training(smoke_cfg(tmp_path, "ppo"))
@@ -148,15 +229,6 @@ def test_resume_recreates_finals_if_vecnormalize_missing(tmp_path: Path, monkeyp
     assert (run_dir / FINAL_VECNORM).exists()
 
 
-def test_resume_refuses_checkpoint_without_vecnormalize(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("WANDB_MODE", "offline")
-    run_dir = run_training(smoke_cfg(tmp_path, "ppo"))
-    vecnormalize_for(latest_checkpoint(run_dir)).unlink()
-
-    with pytest.raises(SystemExit, match="vecnormalize sibling"):
-        run_training(smoke_cfg(tmp_path, "ppo", extra=["resume=true"]))
-
-
 def test_sac_resume_reloads_replay_buffer(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("WANDB_MODE", "offline")
     run_dir = run_training(smoke_cfg(tmp_path, "sac", extra=["rl.checkpoint.save_freq=64"]))
@@ -167,6 +239,9 @@ def test_sac_resume_reloads_replay_buffer(tmp_path: Path, monkeypatch):
     run_training(smoke_cfg(tmp_path, "sac", extra=["resume=true", "extend_timesteps=400"]))
     model = SAC.load(run_dir / FINAL_MODEL, device="cpu")
     assert model.num_timesteps >= 400
+    # The finals are what a further extend would resume from, so off-policy
+    # runs have to leave a buffer beside them too.
+    assert (run_dir / FINAL_REPLAY_BUFFER).exists()
     # A buffer that had been dropped instead of reloaded would hold only the
     # transitions collected after the resume, i.e. fewer than it already had.
     filled_after = load_from_pkl(replay_buffer_for(latest_checkpoint(run_dir))).pos
@@ -174,7 +249,8 @@ def test_sac_resume_reloads_replay_buffer(tmp_path: Path, monkeypatch):
 
     # Resuming SAC from a checkpoint whose buffer went missing would silently
     # restart from an empty one, so it has to fail instead.
-    replay_buffer_for(latest_checkpoint(run_dir)).unlink()
+    _drop_finals(run_dir)
+    replay_buffer_for(_keep_only_newest_checkpoint(run_dir)).unlink()
     with pytest.raises(SystemExit, match="replay_buffer sibling"):
         run_training(smoke_cfg(tmp_path, "sac", extra=["resume=true", "extend_timesteps=800"]))
 

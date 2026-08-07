@@ -21,11 +21,17 @@ from owm.baselines.rl.hub import upload_run
 from owm.baselines.rl.run_state import (
     CHECKPOINT_DIR,
     FINAL_MODEL,
+    FINAL_REPLAY_BUFFER,
     FINAL_VECNORM,
     NAME_PREFIX,
+    checkpoint_steps,
     latest_checkpoint,
+    latest_complete_checkpoint,
+    load_final_steps,
     load_wandb_id,
+    missing_siblings,
     replay_buffer_for,
+    save_final_steps,
     save_wandb_id,
     vecnormalize_for,
 )
@@ -84,24 +90,53 @@ def run_training(cfg: DictConfig) -> Path:
         run_id = wandb.util.generate_id()
         save_wandb_id(run_dir, run_id)
 
-    # No ckpt means the run crashed before its first checkpoint: there is no
-    # training state to lose, so it restarts from scratch under the same wandb
-    # id and keeps its history attached.
-    ckpt = latest_checkpoint(run_dir) if resume else None
-    if ckpt is not None:
-        # CheckpointCallback writes both siblings alongside every checkpoint, so
-        # a missing one means a damaged run dir. Substituting a fresh one would
-        # corrupt the resumed run rather than fail it.
-        if vecnormalize_for(ckpt) is None:
+    # No checkpoint at all means the run crashed before its first one: there is
+    # no training state to lose, so it restarts from scratch under the same
+    # wandb id and keeps its history attached. Checkpoints that exist but are
+    # unreadable are a different case, handled below.
+    needs_buffer = cfg.rl.algo == "sac"
+    ckpt = latest_complete_checkpoint(run_dir, needs_buffer) if resume else None
+    newest = latest_checkpoint(run_dir) if resume else None
+    if newest is not None and newest != ckpt:
+        # CheckpointCallback writes the siblings after the zip, so a run killed
+        # mid-save leaves a newest checkpoint that cannot be resumed from.
+        # Substituting fresh statistics or an empty buffer would corrupt the
+        # resumed run; an older complete checkpoint only costs re-training.
+        gaps = " and ".join(missing_siblings(newest, needs_buffer))
+        if ckpt is None:
             raise SystemExit(
-                f"{ckpt} has no vecnormalize sibling; resuming would run a trained "
-                "policy against fresh normalization statistics"
+                f"{newest} has no {gaps} and no older checkpoint in {run_dir} is "
+                "complete; nothing here can be resumed from"
             )
-        if cfg.rl.algo == "sac" and replay_buffer_for(ckpt) is None:
+        print(
+            f"[resume] WARNING {newest.name} has no {gaps} (killed mid-save?); "
+            f"resuming from {ckpt.name} and re-training the steps in between"
+        )
+
+    # A finished run's finals sit past its last periodic checkpoint — the budget
+    # is met at a rollout boundary, not a checkpoint one — so extending one has
+    # to restart from the finals or it silently discards that tail.
+    finals_on_disk = (run_dir / FINAL_MODEL).exists() and (run_dir / FINAL_VECNORM).exists()
+    final_steps = load_final_steps(run_dir) if resume and finals_on_disk else None
+    from_final = final_steps is not None and (
+        ckpt is None or final_steps >= checkpoint_steps(ckpt)
+    )
+
+    if from_final:
+        source = run_dir / FINAL_MODEL
+        source_vecnorm = run_dir / FINAL_VECNORM
+        source_buffer = run_dir / FINAL_REPLAY_BUFFER
+        if needs_buffer and not source_buffer.exists():
             raise SystemExit(
-                f"{ckpt} has no replay_buffer sibling; resuming SAC would restart "
-                "from an empty buffer"
+                f"{source} has no {FINAL_REPLAY_BUFFER} beside it; resuming SAC "
+                "from it would restart from an empty buffer"
             )
+    elif ckpt is not None:
+        source = ckpt
+        source_vecnorm = vecnormalize_for(ckpt)
+        source_buffer = replay_buffer_for(ckpt)
+    else:
+        source = None
 
     wandb.init(
         id=run_id,
@@ -121,8 +156,8 @@ def run_training(cfg: DictConfig) -> Path:
     iss_config(cfg.environments).to_yaml(run_dir / "env_config.yaml")
 
     venv = make_vec_env(cfg.environments, cfg.rl.n_envs, cfg.seed, vec=cfg.rl.vec)
-    if ckpt is not None:
-        venv = VecNormalize.load(str(vecnormalize_for(ckpt)), venv)
+    if source is not None:
+        venv = VecNormalize.load(str(source_vecnorm), venv)
     else:
         # Position obs are O(100 m) while rates are O(1e-3); normalization is
         # load-bearing. Reward normalization also tames the -1e6 collision spike.
@@ -131,12 +166,12 @@ def run_training(cfg: DictConfig) -> Path:
         )
 
     algo_cls = ALGOS[cfg.rl.algo]
-    if ckpt is not None:
+    if source is not None:
         model = algo_cls.load(
-            ckpt, env=venv, device=cfg.rl.device, tensorboard_log=str(run_dir / "tb")
+            source, env=venv, device=cfg.rl.device, tensorboard_log=str(run_dir / "tb")
         )
-        if cfg.rl.algo == "sac":
-            model.load_replay_buffer(replay_buffer_for(ckpt))
+        if needs_buffer:
+            model.load_replay_buffer(source_buffer)
     else:
         model = algo_cls(
             "MlpPolicy",
@@ -169,19 +204,19 @@ def run_training(cfg: DictConfig) -> Path:
     # counter to whatever it is given when reset_num_timesteps=False, so a
     # resumed leg must ask only for the steps still outstanding.
     remaining = int(cfg.rl.total_timesteps)
-    if ckpt is not None:
+    if source is not None:
         remaining = max(remaining - model.num_timesteps, 0)
 
     if remaining > 0:
         model.learn(
             total_timesteps=remaining,
             callback=callbacks,
-            reset_num_timesteps=ckpt is None,
+            reset_num_timesteps=source is None,
         )
 
-    # This model was rebuilt from the latest checkpoint, which trails whatever
-    # the finished leg saved as final: a re-issued resume (a requeued job, say)
-    # would otherwise roll the finals back to the last checkpoint boundary.
+    # Nothing was trained, so re-saving would at best rewrite the finals with
+    # themselves and at worst — when this model came from a checkpoint that
+    # trails them — roll them back to that checkpoint's boundary.
     # Absent finals still have to be written — a crash between the last
     # checkpoint and the final save leaves the budget met but nothing final.
     # venv/wandb cleanup must run even if artifact logging or the hub upload
@@ -197,6 +232,12 @@ def run_training(cfg: DictConfig) -> Path:
         else:
             model.save(run_dir / FINAL_MODEL)
             venv.save(str(run_dir / FINAL_VECNORM))
+            if needs_buffer:
+                model.save_replay_buffer(run_dir / FINAL_REPLAY_BUFFER)
+            # Written last: until every final artifact is on disk there is no
+            # step count to claim, and a resume that read one early would skip
+            # a complete checkpoint for a half-written final.
+            save_final_steps(run_dir, model.num_timesteps)
 
             artifact = wandb.Artifact(name=f"{run_dir.name}-model", type="model")
             artifact.add_file(str(run_dir / FINAL_MODEL))

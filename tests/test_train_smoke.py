@@ -5,7 +5,13 @@ from conftest import smoke_cfg
 
 from owm_envs.envs.iss.config import ISSConfig
 
-from owm.baselines.rl.run_state import CHECKPOINT_DIR, FINAL_MODEL, FINAL_VECNORM, load_wandb_id
+from owm.baselines.rl.run_state import (
+    CHECKPOINT_DIR,
+    FINAL_MODEL,
+    FINAL_REPLAY_BUFFER,
+    FINAL_VECNORM,
+    load_wandb_id,
+)
 from owm.baselines.rl.train import run_training
 
 
@@ -19,6 +25,9 @@ def test_train_smoke(tmp_path: Path, algo: str, monkeypatch):
     assert "${" not in (run_dir / "config.yaml").read_text()
     assert load_wandb_id(run_dir) is not None
     assert any((run_dir / CHECKPOINT_DIR).glob("model_*_steps.zip"))
+    # Only off-policy runs carry a buffer, and only locally — an extend that
+    # resumes from the finals needs it, the hub upload never sees it.
+    assert (run_dir / FINAL_REPLAY_BUFFER).exists() == (algo == "sac")
     # The env the run actually trained on, spelled out: environments=
     # from_dataset would otherwise leave only a repo name behind.
     assert ISSConfig.from_yaml(run_dir / "env_config.yaml").dt == 0.05

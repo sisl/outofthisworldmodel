@@ -70,7 +70,17 @@ runs/<run_name>/
   wandb_run_id.txt                wandb id, so resume reattaches to the run
   checkpoints/model_<N>_steps.zip (+ vecnormalize/replay_buffer siblings)
   final_model.zip / vecnormalize.pkl
+  final_replay_buffer.pkl         off-policy buffer, local only (never uploaded)
+  final_steps.txt                 num_timesteps the finals hold
 ```
+
+A resume rebuilds from the final artifacts when they are at least as far
+along as the newest complete checkpoint — a finished run's finals sit past
+its last checkpoint, and rebuilding from that checkpoint would throw the
+difference away. Otherwise it takes the newest checkpoint that still has
+every sibling it needs, warning about any newer one a kill left
+half-written. A run dir whose checkpoints are *all* incomplete fails
+loudly; only a dir with no checkpoints at all restarts from step 0.
 
 `rl.total_timesteps` is the run's *absolute* budget, not a per-invocation
 increment: resuming a run that already met its budget is a no-op that
