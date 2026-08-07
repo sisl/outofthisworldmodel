@@ -13,6 +13,7 @@ import hydra
 import wandb
 from dotenv import load_dotenv
 from omegaconf import DictConfig, OmegaConf
+from owm_envs.envs.iss.config import ISSConfig
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.vec_env import VecNormalize
@@ -151,11 +152,22 @@ def run_training(cfg: DictConfig) -> Path:
     )
 
     # environments=from_dataset names a repo, not an env, so the hydra config
-    # alone does not say what was trained on. Record the concrete config the
-    # workers will each build, the way published datasets ship theirs.
-    iss_config(cfg.environments).to_yaml(run_dir / "env_config.yaml")
+    # alone does not say what was trained on. Resolve it exactly once — on the
+    # first launch — and record it the way published datasets ship theirs. A
+    # resume reads that record back instead of re-resolving: an unpinned
+    # dataset ref can move, which would leave the run's legs training under
+    # different dynamics than the file claims.
+    env_record = run_dir / "env_config.yaml"
+    if resume and env_record.exists():
+        iss_cfg = ISSConfig.from_yaml(env_record)
+    else:
+        iss_cfg = iss_config(cfg.environments)
+        iss_cfg.to_yaml(env_record)
+    # Workers and the video env get the concrete config, never the repo name:
+    # each would otherwise re-download it, and could disagree about the result.
+    env_conf = iss_cfg.model_dump(mode="json")
 
-    venv = make_vec_env(cfg.environments, cfg.rl.n_envs, cfg.seed, vec=cfg.rl.vec)
+    venv = make_vec_env(env_conf, cfg.rl.n_envs, cfg.seed, vec=cfg.rl.vec)
     if source is not None:
         venv = VecNormalize.load(str(source_vecnorm), venv)
     else:
@@ -194,7 +206,7 @@ def run_training(cfg: DictConfig) -> Path:
     ]
     if cfg.video.enabled:
         callbacks.append(VideoEvalCallback(
-            env_conf=OmegaConf.to_container(cfg.environments, resolve=True),
+            env_conf=env_conf,
             every_steps=cfg.video.every_steps,
             max_frames=cfg.video.max_frames,
             seed=cfg.seed + 10_000,  # never the training seeds

@@ -82,6 +82,10 @@ every sibling it needs, warning about any newer one a kill left
 half-written. A run dir whose checkpoints are *all* incomplete fails
 loudly; only a dir with no checkpoints at all restarts from step 0.
 
+`env_config.yaml` is written once, on the first launch, and every env
+worker is handed what it records: a resume trains on that file rather than
+re-resolving `environments=from_dataset`, whose ref can move between legs.
+
 `rl.total_timesteps` is the run's *absolute* budget, not a per-invocation
 increment: resuming a run that already met its budget is a no-op that
 leaves the final artifacts and hub upload untouched. A resume takes its
