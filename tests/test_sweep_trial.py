@@ -7,7 +7,13 @@ from owm_envs.envs.iss.config import ISSConfig
 from owm.baselines.rl import sweep_callbacks
 from owm.baselines.rl.run_state import CHECKPOINT_DIR, FINAL_MODEL, FINAL_REPLAY_BUFFER
 from owm.baselines.rl.sweep_callbacks import EvalReportCallback, TrialTimeoutCallback
-from owm.baselines.rl.sweep_trial import build_cfg, prune_trial_artifacts
+from owm.baselines.rl.sweep_trial import (
+    EVAL_REPORTS,
+    RESERVED_KEYS,
+    build_cfg,
+    eval_cadence,
+    prune_trial_artifacts,
+)
 
 PPO_TRIAL = {
     "algo": "ppo",
@@ -32,8 +38,9 @@ def test_trial_config_carries_every_swept_hyperparameter(tmp_path: Path):
     # default leaves at SB3's own.
     assert cfg.rl.hyperparams.clip_range == 0.3
     # Reserved keys say how to run the trial; they are not SB3 arguments and
-    # would be rejected as such.
-    for reserved in ("algo", "seed", "trial_timesteps"):
+    # would be rejected as such. Driven off the table so a key added to it
+    # cannot start leaking into the hyperparameters unnoticed.
+    for reserved in RESERVED_KEYS:
         assert reserved not in cfg.rl.hyperparams
 
 
@@ -52,6 +59,22 @@ def test_a_spec_that_pins_no_horizon_fails_before_anything_is_trained(tmp_path: 
 
     with pytest.raises(SystemExit, match="no trial_timesteps"):
         build_cfg(trial, tmp_path / "run")
+
+
+@pytest.mark.parametrize("horizon", [500_000, 250_000, 40_000])
+def test_the_report_cadence_leaves_room_to_be_banded(horizon):
+    # Hyperband only bands a trial that has reported min_iter times, so the
+    # cadence has to follow the horizon its spec pinned rather than a constant
+    # chosen for one of them.
+    assert horizon // eval_cadence(horizon) >= EVAL_REPORTS
+
+
+def test_a_horizon_too_short_to_report_is_refused(tmp_path: Path):
+    # SB3 advances the step count by n_envs at a time, so a horizon under a
+    # few multiples of that trains nothing and would still hand the sweep an
+    # objective to rank against real trials.
+    with pytest.raises(SystemExit, match="too short"):
+        build_cfg({**PPO_TRIAL, "trial_timesteps": 8}, tmp_path / "run")
 
 
 def test_routing_an_option_this_checkout_lacks_fails_the_trial_loudly(tmp_path: Path):

@@ -71,6 +71,15 @@ def build_cfg(config: Mapping[str, Any], run_dir: Path) -> DictConfig:
             "horizon or trials would silently run the multi-million-step "
             "conf/rl default"
         )
+    # A horizon shorter than the vec width trains nothing and reports nothing,
+    # so the trial would return an objective from an untrained policy and the
+    # sweep would rank it against real ones.
+    if int(config["trial_timesteps"]) < EVAL_REPORTS * RESOURCES[algo]["n_envs"]:
+        raise SystemExit(
+            f"trial_timesteps={config['trial_timesteps']!r} is too short for "
+            f"{algo}: it takes at least {EVAL_REPORTS * RESOURCES[algo]['n_envs']} "
+            f"steps to report the objective {EVAL_REPORTS} times"
+        )
 
     with initialize_config_dir(config_dir=CONF_DIR, version_base="1.3"):
         cfg = compose(config_name="config", overrides=[f"rl={algo}"])
@@ -115,6 +124,16 @@ def build_cfg(config: Mapping[str, Any], run_dir: Path) -> DictConfig:
     return cfg
 
 
+def eval_cadence(total_timesteps: int) -> int:
+    """Steps between objective reports, derived so a trial can be banded.
+
+    Fixed at 100k this was fine for a 500k horizon and useless for a shorter
+    one: hyperband only bands a trial that has reported min_iter times, so the
+    cadence has to follow whatever horizon its spec pinned.
+    """
+    return max(total_timesteps // EVAL_REPORTS, 1)
+
+
 def prune_trial_artifacts(run_dir: Path) -> None:
     """Drop what only a resume would want, keeping the final model and stats.
 
@@ -149,10 +168,7 @@ def main() -> None:
         callbacks = [
             EvalReportCallback(
                 run_dir=run_dir,
-                # Derived from the horizon, not fixed: a shorter sweep with a
-                # fixed cadence would report fewer times than hyperband's
-                # min_iter and never be banded at all.
-                every_steps=max(int(cfg.rl.total_timesteps) // EVAL_REPORTS, 1),
+                every_steps=eval_cadence(int(cfg.rl.total_timesteps)),
                 episodes=EVAL_EPISODES,
                 final_episodes=FINAL_EVAL_EPISODES,
                 seed=cfg.seed + 10_000,  # never the training seeds
