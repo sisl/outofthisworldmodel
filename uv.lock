@@ -1109,7 +1109,7 @@ requires-dist = [
     { name = "imageio", extras = ["ffmpeg"], specifier = ">=2.31" },
     { name = "moviepy", specifier = ">=1.0" },
     { name = "numpy", specifier = ">=1.26" },
-    { name = "owm-envs", extras = ["render"], git = "ssh://git@github.com/sisl/outofthisworldmodel-envs.git?rev=ef7821011301d0ab3646e317db419c7eb71470b9" },
+    { name = "owm-envs", extras = ["render"], git = "ssh://git@github.com/sisl/outofthisworldmodel-envs.git?rev=7c26394dec0e9a6e82c4bcc666a791e886cc5a2f" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "stable-baselines3", specifier = ">=2.4" },
     { name = "tensorboard", specifier = ">=2.15" },
@@ -1122,7 +1122,7 @@ dev = [{ name = "pytest", specifier = ">=8.0" }]
 [[package]]
 name = "owm-envs"
 version = "0.1.0"
-source = { git = "ssh://git@github.com/sisl/outofthisworldmodel-envs.git?rev=ef7821011301d0ab3646e317db419c7eb71470b9#ef7821011301d0ab3646e317db419c7eb71470b9" }
+source = { git = "ssh://git@github.com/sisl/outofthisworldmodel-envs.git?rev=7c26394dec0e9a6e82c4bcc666a791e886cc5a2f#7c26394dec0e9a6e82c4bcc666a791e886cc5a2f" }
 dependencies = [
     { name = "astrojax" },
     { name = "gymnasium" },
