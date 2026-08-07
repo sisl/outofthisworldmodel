@@ -49,7 +49,13 @@ def _backbone(variant: str, device: str) -> tuple[nn.Module, int]:
 
 
 class FrozenResnetExtractor:
-    """One rendered frame to one fixed embedding vector."""
+    """One rendered frame to one fixed embedding vector.
+
+    A frame that is not already image_size square is scaled to it, aspect ratio
+    and all. Not the resize-and-center-crop ImageNet classification uses: a
+    crop throws away the edges of the frame, and during an approach the station
+    structure the policy has to avoid is exactly what sits out there.
+    """
 
     def __init__(
         self,
@@ -102,8 +108,15 @@ class ResnetObservationWrapper(gym.ObservationWrapper):
                 f"env must be built with render_mode='rgb_array' (got "
                 f"{env.render_mode!r})"
             )
-        self._extractor = extractor
         base = env.observation_space
+        if not isinstance(base, Box) or len(base.shape) != 1:
+            # np.concatenate below would flatten a 2-D space into a plausible
+            # looking vector rather than fail, and the policy would train on it.
+            raise ValueError(
+                f"ResnetObservationWrapper appends to a flat Box observation, "
+                f"got {base}"
+            )
+        self._extractor = extractor
         # Nothing bounds a ResNet feature, so the embedding half of the space is
         # infinite; VecNormalize clips what actually shows up.
         bound = np.full(extractor.embed_dim, np.inf, dtype=np.float32)

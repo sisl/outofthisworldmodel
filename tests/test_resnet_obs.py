@@ -140,3 +140,10 @@ def test_frozen_extractor_rejects_frames_it_cannot_read():
 def test_frozen_extractor_rejects_a_layer_it_does_not_implement():
     with pytest.raises(ValueError, match="only 'avgpool'"):
         FrozenResnetExtractor(layer="layer4")
+
+
+def test_wrapper_refuses_an_observation_space_it_cannot_append_to():
+    env = FakeRenderEnv()
+    env.observation_space = Box(-np.inf, np.inf, (5, 5), dtype=np.float32)
+    with pytest.raises(ValueError, match="flat Box observation"):
+        ResnetObservationWrapper(env, StubExtractor())
