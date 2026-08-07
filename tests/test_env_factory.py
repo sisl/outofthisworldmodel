@@ -77,3 +77,32 @@ def test_from_dataset_environments_group_composes():
     with initialize_config_dir(config_dir=CONF_DIR, version_base="1.3"):
         cfg = compose(config_name="config", overrides=["environments=from_dataset"])
     assert cfg.environments.from_dataset_repo == "sislaboratory/owm-iss-coop-goal-dt50ms"
+
+
+def _env_conf_for(group: str):
+    with initialize_config_dir(config_dir=CONF_DIR, version_base="1.3"):
+        return compose(config_name="config", overrides=[f"environments={group}"]).environments
+
+
+def test_ports_config_draws_a_varying_dock_port_across_resets():
+    cfg = iss_config(_env_conf_for("iss_coop_goal_ports"))
+    env = make_iss_env(cfg, seed=0)
+
+    ports_seen = set()
+    goal_poses = set()
+    for seed in range(12):
+        _, info = env.reset(seed=seed)
+        ports_seen.add(info["dock_port"])
+        goal_poses.add(tuple(np.asarray(info["goal_pose"]).tolist()))
+
+    assert len(ports_seen) > 1
+    assert len(goal_poses) > 1
+
+
+def test_no_ports_config_never_reports_a_dock_port():
+    cfg = iss_config(env_conf())
+    env = make_iss_env(cfg, seed=0)
+
+    _, info = env.reset(seed=0)
+    assert "dock_port" not in info
+    assert np.allclose(info["goal_pose"][:3], cfg.dock.position)

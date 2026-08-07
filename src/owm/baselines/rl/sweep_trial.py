@@ -83,7 +83,12 @@ def build_cfg(config: Mapping[str, Any], run_dir: Path) -> DictConfig:
         )
 
     with initialize_config_dir(config_dir=CONF_DIR, version_base="1.3"):
-        cfg = compose(config_name="config", overrides=[f"rl={algo}"])
+        # Sweeps tune hyperparameters for the real training environment, the
+        # random-port goal distribution, not the group default single-port one.
+        cfg = compose(
+            config_name="config",
+            overrides=[f"rl={algo}", "environments=iss_coop_goal_ports"],
+        )
 
     # Assigned rather than passed as hydra overrides: the sweeps tune SB3
     # arguments the group defaults do not all spell out (clip_range, tau, ...),

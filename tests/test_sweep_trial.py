@@ -95,6 +95,15 @@ def test_trial_config_forces_the_settings_a_sweep_cannot_choose(tmp_path: Path):
     assert cfg.rl.n_envs == 8
     assert cfg.rl.vec == "subproc"
     assert cfg.rl.device == "cpu"
+    # Sweeps tune hyperparameters for the real training distribution, not the
+    # group default single-port one.
+    assert cfg.environments.dock.ports == [
+        "harmony_fwd_pma2",
+        "harmony_nadir_cbm",
+        "zvezda_aft",
+        "pirs_nadir",
+        "rassvet_nadir",
+    ]
 
 
 def test_sac_trials_stay_on_the_gpu_they_are_allowed(tmp_path: Path):
