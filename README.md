@@ -34,8 +34,8 @@ just train-sac [ARGS...]     # fresh SAC run   (owm.baselines.rl.train rl=sac)
 just resume RUN_DIR [ARGS...]  # resume a crashed/stopped run
 just smoke                   # tiny offline PPO run, no hub upload
 just eval CKPT [ARGS...]     # evaluate a checkpoint
-just sweep-init ALGO         # create a wandb sweep, print its id
-just sweep-agent ID ALGO     # run one sweep agent (see Sweeps below)
+just sweep-init SWEEP        # create a wandb sweep, print its id
+just sweep-agent ID SWEEP    # run one sweep agent (see Sweeps below)
 just test                    # pytest, network tests deselected
 just test-network            # pytest -m network only
 ```
@@ -57,35 +57,54 @@ so evaluating against it needs a matching env override.
 Bayesian hyperparameter search for both baselines, run by wandb:
 
 ```bash
-just sweep-init ppo               # prints a sweep id
-just sweep-agent <sweep_id> ppo   # one agent; run it under nohup/tmux
-just sweep-init sac
-just sweep-agent <sweep_id> sac
+just sweep-init ppo_vector               # prints a sweep id
+just sweep-agent <sweep_id> ppo_vector   # one agent; run it under nohup/tmux
+just sweep-init sac_vector
+just sweep-agent <sweep_id> sac_vector
 ```
 
-Each trial trains 500k steps, reports a deterministic 5-episode eval every
-100k, and finishes with a 20-episode one. The sweep maximizes
-`sweep/eval_mean_return` — eval return, not a training loss, because losses
-are not comparable across hyperparameters (a small clip range or a large
-`tau` changes what the loss *means*), while the deterministic return is the
-same measurement of docking behaviour whatever produced the policy.
+There is one spec per (algorithm, observation mode) pair — `sweeps/<name>.yaml`
+— and the intended matrix is `{ppo, sac} x {vector, vector_pixels}`. Only the
+two vector specs exist today; the pixel pair ships with the `rl.obs` option.
 
-`sweeps/ppo.yaml` and `sweeps/sac.yaml` are wandb sweep specs, deliberately
-outside `conf/`: a `conf/sweep/` directory would show up in hydra's config
-group discovery as a group nothing ever selects. Each spec pins the
-algorithm and seed and searches the rest; the per-trial entry point is
-`owm.baselines.rl.sweep_trial`, which reads `wandb.config`, maps every
-non-control key onto `rl.hyperparams.*`, and trains under the run the agent
-already opened (`external_wandb=true` — see below). Hyperband early
-termination bands on those periodic reports, so `min_iter: 3` means three
-reports, i.e. 300k steps, not three epochs.
+Each trial trains its pinned horizon (500k steps for the vector specs),
+reports a deterministic 5-episode eval five times along the way, and
+finishes with a 20-episode one. The sweep maximizes `sweep/eval_mean_return`
+— eval return, not a training loss, because losses are not comparable across
+hyperparameters (a small clip range or a large `tau` changes what the loss
+*means*), while the deterministic return is the same measurement of docking
+behaviour whatever produced the policy. Hyperband bands on those periodic
+reports, so `min_iter: 3` counts reports, not epochs; the reporting cadence
+is derived from the horizon rather than fixed, so a shorter sweep still
+produces enough reports to be banded.
+
+The specs live outside `conf/` deliberately: a `conf/sweep/` directory would
+show up in hydra's config group discovery as a group nothing ever selects.
+The per-trial entry point is `owm.baselines.rl.sweep_trial`, which reads
+`wandb.config` and trains under the run the agent already opened
+(`external_wandb=true` — see below). It maps keys by a small routing table:
+
+| wandb.config key | goes to |
+|---|---|
+| `algo` | selects the `rl` config group |
+| `trial_timesteps` | `rl.total_timesteps` |
+| `obs` | `rl.obs` |
+| `seed` | `seed` |
+| anything else | `rl.hyperparams.<key>` |
+
+So a spec tunes a new SB3 argument by naming it and nothing else. A routed
+key whose target does not exist in the composed config fails the trial
+loudly — a spec setting `obs` in a checkout without `rl.obs` stops rather
+than training vector observations while reporting that it swept the mode.
+A spec that pins no `trial_timesteps` is refused the same way, since it
+would otherwise inherit `conf/rl`'s multi-million-step budget.
 
 Trials write to `runs/sweeps/<algo>/<wandb_run_id>/`. Checkpoints and the
 final replay buffer are deleted when the trial ends — nothing resumes a
 trial, and a few dozen SAC buffers would fill the disk — leaving the final
 model and its VecNormalize stats.
 
-Two bounds keep a trial from running away: `rl.total_timesteps=500000`, and
+Two bounds keep a trial from running away: its pinned `trial_timesteps`, and
 `SWEEP_TRIAL_MAX_SECONDS` (default 7200), whose clock starts when the trial
 is set up, not when training does, and which ends training gracefully so the
 trial still reports an objective and logs `sweep/timed_out=1`. It is a bound
@@ -95,7 +114,7 @@ worth nothing to the sweep. Budget a few minutes past it. Agents themselves
 run until stopped; stop them at the deadline with `Ctrl-C` (SIGINT), which
 lets the trial in flight finish its final eval.
 
-Both specs fix `seed: 0`, so the search is over hyperparameters at one
+Both vector specs fix `seed: 0`, so the search is over hyperparameters at one
 training seed and a winner may partly have won on luck; re-run the finalists
 across several seeds before believing the ranking. For SAC, `train_freq` and
 `gradient_steps` are searched independently, which spans a 64x range of

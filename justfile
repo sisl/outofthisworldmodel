@@ -22,20 +22,21 @@ smoke:
 eval CKPT *ARGS:
     uv run python -m owm.baselines.rl.evaluate eval.checkpoint={{CKPT}} {{ARGS}}
 
-# Create the wandb sweep from its spec; prints the sweep id
-sweep-init ALGO:
+# Create a wandb sweep from sweeps/<SWEEP>.yaml; prints the sweep id
+sweep-init SWEEP:
     uv run wandb sweep --entity "$WANDB_ENTITY" --project "$WANDB_PROJECT" \
-        sweeps/{{ALGO}}.yaml
+        sweeps/{{SWEEP}}.yaml
 
 # Run one sweep agent (PPO on CPU, SAC on GPU 0); stop it with Ctrl-C
-sweep-agent SWEEP_ID ALGO:
+sweep-agent SWEEP_ID SWEEP:
     #!/usr/bin/env bash
     set -euo pipefail
-    # SAC gets GPU 0 and only GPU 0: GPU 1 hosts somebody else's server.
-    case "{{ALGO}}" in
-        ppo) export CUDA_VISIBLE_DEVICES="" ;;
-        sac) export CUDA_VISIBLE_DEVICES="0" ;;
-        *) echo "unknown algo '{{ALGO}}': expected ppo or sac" >&2; exit 1 ;;
+    # Keyed on the spec's algo prefix, so every obs mode of an algo lands on
+    # the same device. SAC gets GPU 0 and only GPU 0: GPU 1 is someone else's.
+    case "{{SWEEP}}" in
+        ppo_*) export CUDA_VISIBLE_DEVICES="" ;;
+        sac_*) export CUDA_VISIBLE_DEVICES="0" ;;
+        *) echo "unknown sweep '{{SWEEP}}': expected ppo_* or sac_*" >&2; exit 1 ;;
     esac
     uv run wandb agent "$WANDB_ENTITY/$WANDB_PROJECT/{{SWEEP_ID}}"
 

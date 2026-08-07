@@ -1,7 +1,9 @@
-# wandb Bayesian sweep over SAC on the ISS docking env.
+# wandb Bayesian sweep over PPO on the ISS docking env, vector observations.
 #
-#   just sweep-init sac          # prints the sweep id
-#   just sweep-agent <id> sac    # one agent, pinned to GPU 0
+#   just sweep-init ppo_vector          # prints the sweep id
+#   just sweep-agent <id> ppo_vector    # one agent, CPU only
+#
+# One spec per (algo, obs mode) pair; the pixel specs land with rl.obs.
 #
 # These specs live outside conf/ because they are wandb sweep files, not hydra
 # configs: a conf/sweep/ directory would appear in hydra's group discovery and
@@ -23,29 +25,33 @@ early_terminate:
   min_iter: 3   # in reports, not epochs: roughly one per 100k steps
 parameters:
   algo:
-    value: sac
+    value: ppo
   seed:
     value: 0
+  trial_timesteps:
+    # The trial's whole horizon. Pinned per spec rather than in code so a
+    # slower obs mode can buy itself a different one.
+    value: 500000
   learning_rate:
     distribution: log_uniform_values
     min: 1.0e-5
     max: 1.0e-3
+  n_steps:
+    values: [512, 1024, 2048, 4096]
   batch_size:
     values: [256, 512, 1024]
   gamma:
     # dt=50 ms, so even 0.995 only looks ~10 s ahead; lower is myopic here.
     values: [0.995, 0.999, 0.9995]
-  tau:
+  gae_lambda:
+    distribution: uniform
+    min: 0.9
+    max: 0.98
+  ent_coef:
     distribution: log_uniform_values
-    min: 1.0e-3
-    max: 2.0e-2
-  train_freq:
-    values: [1, 4, 8]
-  gradient_steps:
-    values: [1, 4, 8]
-  learning_starts:
-    values: [5000, 10000, 20000]
-  buffer_size:
-    # A 500k-step trial never fills 1M, but the smaller buffer forgets its
-    # early transitions, which is the thing worth measuring.
-    values: [300000, 1000000]
+    min: 1.0e-8
+    max: 1.0e-2
+  clip_range:
+    values: [0.1, 0.2, 0.3]
+  n_epochs:
+    values: [5, 10, 20]

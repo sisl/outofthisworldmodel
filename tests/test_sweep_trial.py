@@ -7,11 +7,12 @@ from owm_envs.envs.iss.config import ISSConfig
 from owm.baselines.rl import sweep_callbacks
 from owm.baselines.rl.run_state import CHECKPOINT_DIR, FINAL_MODEL, FINAL_REPLAY_BUFFER
 from owm.baselines.rl.sweep_callbacks import EvalReportCallback, TrialTimeoutCallback
-from owm.baselines.rl.sweep_trial import TOTAL_TIMESTEPS, build_cfg, prune_trial_artifacts
+from owm.baselines.rl.sweep_trial import build_cfg, prune_trial_artifacts
 
 PPO_TRIAL = {
     "algo": "ppo",
     "seed": 3,
+    "trial_timesteps": 500_000,
     "learning_rate": 1.234e-4,
     "n_steps": 1024,
     "batch_size": 512,
@@ -30,18 +31,40 @@ def test_trial_config_carries_every_swept_hyperparameter(tmp_path: Path):
     # Not in conf/rl/ppo.yaml at all: a sweep may tune arguments the group
     # default leaves at SB3's own.
     assert cfg.rl.hyperparams.clip_range == 0.3
-    assert cfg.seed == 3
-    # Control keys say how to run the trial; they are not SB3 arguments and
+    # Reserved keys say how to run the trial; they are not SB3 arguments and
     # would be rejected as such.
-    assert "algo" not in cfg.rl.hyperparams
-    assert "seed" not in cfg.rl.hyperparams
+    for reserved in ("algo", "seed", "trial_timesteps"):
+        assert reserved not in cfg.rl.hyperparams
+
+
+def test_reserved_keys_are_routed_to_the_options_they_name(tmp_path: Path):
+    cfg = build_cfg({**PPO_TRIAL, "trial_timesteps": 250_000}, tmp_path / "run")
+
+    assert cfg.seed == 3
+    assert cfg.rl.total_timesteps == 250_000
+    # A trial is disposable, so its one checkpoint sits at the very end rather
+    # than every 100k: SAC's carry a replay buffer of hundreds of MB.
+    assert cfg.rl.checkpoint.save_freq == 250_000
+
+
+def test_a_spec_that_pins_no_horizon_fails_before_anything_is_trained(tmp_path: Path):
+    trial = {key: value for key, value in PPO_TRIAL.items() if key != "trial_timesteps"}
+
+    with pytest.raises(SystemExit, match="no trial_timesteps"):
+        build_cfg(trial, tmp_path / "run")
+
+
+def test_routing_an_option_this_checkout_lacks_fails_the_trial_loudly(tmp_path: Path):
+    # rl.obs lands with the pixel-observation task. Until then a sweep that
+    # asks for it must stop, not train vector obs while reporting it swept obs.
+    with pytest.raises(SystemExit, match=r"rl\.obs"):
+        build_cfg({**PPO_TRIAL, "obs": "vector_pixels"}, tmp_path / "run")
 
 
 def test_trial_config_forces_the_settings_a_sweep_cannot_choose(tmp_path: Path):
     run_dir = tmp_path / "run"
     cfg = build_cfg(PPO_TRIAL, run_dir)
 
-    assert cfg.rl.total_timesteps == TOTAL_TIMESTEPS
     assert cfg.run_dir == str(run_dir)
     assert cfg.external_wandb is True
     assert cfg.hub.upload is False
@@ -52,7 +75,10 @@ def test_trial_config_forces_the_settings_a_sweep_cannot_choose(tmp_path: Path):
 
 
 def test_sac_trials_stay_on_the_gpu_they_are_allowed(tmp_path: Path):
-    cfg = build_cfg({"algo": "sac", "tau": 5.0e-3, "train_freq": 4}, tmp_path / "run")
+    cfg = build_cfg(
+        {"algo": "sac", "trial_timesteps": 500_000, "tau": 5.0e-3, "train_freq": 4},
+        tmp_path / "run",
+    )
 
     # GPU 1 belongs to another tenant; a trial must never land on it.
     assert cfg.rl.device == "cuda:0"

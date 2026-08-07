@@ -30,16 +30,24 @@ load_dotenv()
 CONF_DIR = str(Path(__file__).resolve().parents[4] / "conf")
 SWEEP_RUNS_DIR = Path("runs/sweeps")
 
-TOTAL_TIMESTEPS = 500_000
-EVAL_EVERY_STEPS = 100_000
+EVAL_REPORTS = 5
 EVAL_EPISODES = 5
 FINAL_EVAL_EPISODES = 20
 DEFAULT_MAX_SECONDS = 7200.0
 
-# wandb.config carries the swept hyperparameters plus these two, which say how
-# to run the trial rather than what to train with. Everything else is an SB3
-# keyword argument for the chosen algorithm.
-CONTROL_KEYS = frozenset({"algo", "seed"})
+# wandb.config keys that are not SB3 arguments, and the config path each one
+# writes. Everything not listed here is a hyperparameter for the chosen
+# algorithm, so a sweep can tune a new SB3 argument by naming it and nothing
+# else. `algo` is not routable: it picks the config group the rest lands in.
+ALGO_KEY = "algo"
+ROUTES = {
+    "trial_timesteps": "rl.total_timesteps",
+    "obs": "rl.obs",
+    "seed": "seed",
+}
+RESERVED_KEYS = frozenset({ALGO_KEY, *ROUTES})
+
+_MISSING = object()
 
 # Fixed per algorithm, not swept: they are a property of the machine the sweep
 # runs on, not of the policy. cuda:0 is deliberate — GPU 1 is somebody else's.
@@ -57,6 +65,13 @@ def build_cfg(config: Mapping[str, Any], run_dir: Path) -> DictConfig:
             f"sweep config has algo={algo!r}; expected one of {sorted(RESOURCES)}"
         )
 
+    if "trial_timesteps" not in config:
+        raise SystemExit(
+            "sweep config has no trial_timesteps; every spec must pin its own "
+            "horizon or trials would silently run the multi-million-step "
+            "conf/rl default"
+        )
+
     with initialize_config_dir(config_dir=CONF_DIR, version_base="1.3"):
         cfg = compose(config_name="config", overrides=[f"rl={algo}"])
 
@@ -65,19 +80,34 @@ def build_cfg(config: Mapping[str, Any], run_dir: Path) -> DictConfig:
     # and both hydra's override grammar and struct mode reject a new key.
     OmegaConf.set_struct(cfg, False)
     for key, value in config.items():
-        if key not in CONTROL_KEYS:
+        if key == ALGO_KEY:
+            continue
+        path = ROUTES.get(key)
+        if path is None:
             cfg.rl.hyperparams[key] = value
+            continue
+        # A routed key names an option that must already exist: unlike a
+        # hyperparameter, which SB3 validates the moment the model is built, a
+        # typo'd or not-yet-landed option would be created here and quietly
+        # ignored by everything downstream. This is what a sweep sweeping obs=
+        # hits in a checkout where rl.obs has not landed.
+        if OmegaConf.select(cfg, path, default=_MISSING) is _MISSING:
+            raise SystemExit(
+                f"sweep config sets {key}={value!r}, but this checkout's config "
+                f"has no {path} for it to write — that option is not available "
+                "yet, so the trial would train something other than what the "
+                "sweep asked for"
+            )
+        OmegaConf.update(cfg, path, value)
     OmegaConf.set_struct(cfg, True)
 
-    cfg.seed = int(config.get("seed", 0))
     cfg.run_dir = str(run_dir)
-    cfg.rl.total_timesteps = TOTAL_TIMESTEPS
     cfg.rl.n_envs = RESOURCES[algo]["n_envs"]
     cfg.rl.vec = RESOURCES[algo]["vec"]
     cfg.rl.device = RESOURCES[algo]["device"]
     # A trial is disposable and never resumed, so periodic checkpoints would
     # only cost disk — SAC's carry a replay buffer of hundreds of MB each.
-    cfg.rl.checkpoint.save_freq = TOTAL_TIMESTEPS
+    cfg.rl.checkpoint.save_freq = int(cfg.rl.total_timesteps)
     # The agent owns the run; a trial publishes nothing and renders nothing.
     cfg.external_wandb = True
     cfg.hub.upload = False
@@ -119,7 +149,10 @@ def main() -> None:
         callbacks = [
             EvalReportCallback(
                 run_dir=run_dir,
-                every_steps=EVAL_EVERY_STEPS,
+                # Derived from the horizon, not fixed: a shorter sweep with a
+                # fixed cadence would report fewer times than hyperband's
+                # min_iter and never be banded at all.
+                every_steps=max(int(cfg.rl.total_timesteps) // EVAL_REPORTS, 1),
                 episodes=EVAL_EPISODES,
                 final_episodes=FINAL_EVAL_EPISODES,
                 seed=cfg.seed + 10_000,  # never the training seeds

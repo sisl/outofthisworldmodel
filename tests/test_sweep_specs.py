@@ -5,14 +5,16 @@ import pytest
 import yaml
 
 from owm.baselines.rl.sweep_callbacks import OBJECTIVE
-from owm.baselines.rl.sweep_trial import CONTROL_KEYS, RESOURCES
+from owm.baselines.rl.sweep_trial import RESERVED_KEYS, RESOURCES
 from owm.baselines.rl.train import ALGOS
 
 SWEEPS = Path(__file__).resolve().parent.parent / "sweeps"
+# One spec per (algo, obs mode); the pixel pair lands with rl.obs.
+VECTOR_SPECS = {"ppo": "ppo_vector", "sac": "sac_vector"}
 
 
 def spec(algo: str) -> dict:
-    return yaml.safe_load((SWEEPS / f"{algo}.yaml").read_text())
+    return yaml.safe_load((SWEEPS / f"{VECTOR_SPECS[algo]}.yaml").read_text())
 
 
 @pytest.mark.parametrize("algo", ["ppo", "sac"])
@@ -43,8 +45,15 @@ def test_every_swept_parameter_is_a_real_sb3_argument(algo):
     # A typo here costs a whole trial: the name lands in rl.hyperparams and
     # SB3 rejects it, hours after the agent picked the value.
     accepted = set(inspect.signature(ALGOS[algo].__init__).parameters)
-    swept = set(spec(algo)["parameters"]) - CONTROL_KEYS
+    swept = set(spec(algo)["parameters"]) - RESERVED_KEYS
     assert swept <= accepted, swept - accepted
+
+
+@pytest.mark.parametrize("algo", ["ppo", "sac"])
+def test_every_spec_pins_its_own_horizon(algo):
+    # Without it the trial would run conf/rl's multi-million-step budget, and
+    # a sweep of 5M-step trials looks like a sweep, just a far slower one.
+    assert spec(algo)["parameters"]["trial_timesteps"]["value"] == 500_000
 
 
 def test_every_ppo_batch_size_divides_the_rollout_it_is_drawn_from():
