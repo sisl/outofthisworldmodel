@@ -80,7 +80,14 @@ its last checkpoint, and rebuilding from that checkpoint would throw the
 difference away. Otherwise it takes the newest checkpoint that still has
 every sibling it needs, warning about any newer one a kill left
 half-written. A run dir whose checkpoints are *all* incomplete fails
-loudly; only a dir with no checkpoints at all restarts from step 0.
+loudly *unless* the finals are usable, in which case they are the source;
+only a dir with no checkpoints at all restarts from step 0.
+
+`final_steps.txt` is what makes the finals usable: it is written last and
+deleted before any re-save, so it vouches for one whole generation of
+artifacts. Finals without it — a run dir predating the marker, or one whose
+final save crashed partway through the rewrite — are never resumed from;
+those runs fall back to the last checkpoint.
 
 `env_config.yaml` is written once, on the first launch, and every env
 worker is handed what it records: a resume trains on that file rather than

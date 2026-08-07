@@ -52,6 +52,17 @@ def load_final_steps(run_dir: Path) -> int | None:
     return int(path.read_text().strip()) if path.exists() else None
 
 
+def clear_final_steps(run_dir: Path) -> None:
+    """Withdraw the marker before rewriting the finals it vouches for.
+
+    The count describes the artifact set as a whole, so it stops being true
+    the moment the first of those files is replaced: a crash partway through
+    an extension's re-save would otherwise leave the old count blessing a mix
+    of two legs' finals.
+    """
+    (run_dir / FINAL_STEPS).unlink(missing_ok=True)
+
+
 def _checkpoints(run_dir: Path) -> list[tuple[int, Path]]:
     """Every checkpoint zip in the run dir, highest step count first."""
     ckpt_dir = run_dir / CHECKPOINT_DIR

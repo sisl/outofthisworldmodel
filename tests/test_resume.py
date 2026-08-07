@@ -5,6 +5,7 @@ from conftest import CONF_DIR, SMOKE, smoke_cfg
 from hydra import compose, initialize_config_dir
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.save_util import load_from_pkl
+from stable_baselines3.common.vec_env import VecNormalize
 
 from owm.baselines.rl import train
 from owm.baselines.rl.run_state import (
@@ -135,8 +136,10 @@ def test_resume_passes_saved_id_to_wandb(tmp_path: Path, monkeypatch):
 def test_noop_resume_leaves_final_artifacts_alone(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("WANDB_MODE", "offline")
     # The 300-step budget is met at the 384-step rollout boundary, but with
-    # save_freq=320 the last checkpoint is at 320. A resume rebuilds the model
-    # from that checkpoint, so saving finals would roll them back 64 steps.
+    # save_freq=320 the last checkpoint is at 320. Nothing is left to train, so
+    # the finals must be left exactly as the finished leg wrote them — rewriting
+    # them would at best reproduce them and at worst (had the resume come off
+    # that trailing checkpoint) roll them back 64 steps.
     run_dir = run_training(smoke_cfg(tmp_path, "ppo", extra=["rl.checkpoint.save_freq=320"]))
     before = PPO.load(run_dir / FINAL_MODEL, device="cpu").num_timesteps
     assert PPO.load(latest_checkpoint(run_dir), device="cpu").num_timesteps < before
@@ -184,6 +187,54 @@ def test_resume_falls_back_to_the_last_complete_checkpoint(
     assert loaded == [fallback]
     warning = capsys.readouterr().out
     assert newest.name in warning and "vecnormalize sibling" in warning
+    assert fallback.name in warning  # names the source it actually used
+
+
+def test_a_crashed_extension_withdraws_the_final_marker(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("WANDB_MODE", "offline")
+    run_dir = run_training(smoke_cfg(tmp_path, "ppo"))
+    assert (run_dir / FINAL_STEPS).exists()
+    original_save = VecNormalize.save
+
+    def crash_rewriting_the_finals(self, path):
+        # The checkpoint siblings keep saving; only the finals blow up, which
+        # is the window where final_model.zip is new and vecnormalize.pkl old.
+        if str(path).endswith(FINAL_VECNORM):
+            raise RuntimeError("crashed rewriting the finals")
+        return original_save(self, path)
+
+    with pytest.MonkeyPatch.context() as crashing:
+        crashing.setattr(VecNormalize, "save", crash_rewriting_the_finals)
+        with pytest.raises(RuntimeError, match="crashed rewriting the finals"):
+            run_training(smoke_cfg(tmp_path, "ppo", extra=["resume=true", "extend_timesteps=600"]))
+
+    # The marker vouches for a whole generation of finals. Half-replaced ones
+    # must not inherit the old count, or the next resume trusts a model from
+    # this leg paired with normalization statistics from the previous one.
+    assert not (run_dir / FINAL_STEPS).exists()
+
+    loaded = _spy_on_loads(monkeypatch, PPO)
+    run_training(smoke_cfg(tmp_path, "ppo", extra=["resume=true"]))
+    assert loaded and loaded[0].parent.name == CHECKPOINT_DIR
+
+
+def test_usable_finals_rescue_a_run_whose_checkpoints_are_all_broken(
+    tmp_path: Path, monkeypatch, capsys
+):
+    monkeypatch.setenv("WANDB_MODE", "offline")
+    run_dir = run_training(smoke_cfg(tmp_path, "ppo"))
+    newest = _keep_only_newest_checkpoint(run_dir)
+    vecnormalize_for(newest).unlink()
+
+    # Finals with their marker are a complete, self-consistent generation, so
+    # unreadable checkpoints are no reason to refuse: they only mean the steps
+    # past the finals have to be trained again.
+    loaded = _spy_on_loads(monkeypatch, PPO)
+    run_training(smoke_cfg(tmp_path, "ppo", extra=["resume=true", "extend_timesteps=600"]))
+
+    assert loaded == [run_dir / FINAL_MODEL]
+    warning = capsys.readouterr().out
+    assert newest.name in warning and FINAL_MODEL in warning
 
 
 def test_resume_refuses_when_every_checkpoint_is_incomplete(tmp_path: Path, monkeypatch):

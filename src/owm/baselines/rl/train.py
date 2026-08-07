@@ -23,9 +23,11 @@ from owm.baselines.rl.run_state import (
     CHECKPOINT_DIR,
     FINAL_MODEL,
     FINAL_REPLAY_BUFFER,
+    FINAL_STEPS,
     FINAL_VECNORM,
     NAME_PREFIX,
     checkpoint_steps,
+    clear_final_steps,
     latest_checkpoint,
     latest_complete_checkpoint,
     load_final_steps,
@@ -98,40 +100,51 @@ def run_training(cfg: DictConfig) -> Path:
     needs_buffer = cfg.rl.algo == "sac"
     ckpt = latest_complete_checkpoint(run_dir, needs_buffer) if resume else None
     newest = latest_checkpoint(run_dir) if resume else None
+
+    # A finished run's finals sit past its last periodic checkpoint — the budget
+    # is met at a rollout boundary, not a checkpoint one — so extending one has
+    # to restart from the finals or it silently discards that tail. Decided
+    # before the checkpoints are judged: usable finals are enough to resume
+    # from even when every checkpoint on disk is unreadable.
+    finals_on_disk = (run_dir / FINAL_MODEL).exists() and (run_dir / FINAL_VECNORM).exists()
+    final_steps = load_final_steps(run_dir) if resume and finals_on_disk else None
+    from_final = final_steps is not None and (
+        ckpt is None or final_steps >= checkpoint_steps(ckpt)
+    )
+    if from_final and needs_buffer and not (run_dir / FINAL_REPLAY_BUFFER).exists():
+        raise SystemExit(
+            f"{run_dir / FINAL_MODEL} has no {FINAL_REPLAY_BUFFER} beside it; "
+            "resuming SAC from it would restart from an empty buffer"
+        )
+    if resume and finals_on_disk and final_steps is None:
+        print(
+            f"[resume] WARNING finals in {run_dir} have no {FINAL_STEPS} (a crashed "
+            "final save, or a run dir predating the marker); they cannot be trusted "
+            "to be one generation, so the last checkpoint is used instead"
+        )
+
     if newest is not None and newest != ckpt:
         # CheckpointCallback writes the siblings after the zip, so a run killed
         # mid-save leaves a newest checkpoint that cannot be resumed from.
         # Substituting fresh statistics or an empty buffer would corrupt the
-        # resumed run; an older complete checkpoint only costs re-training.
+        # resumed run; an older complete checkpoint (or the finals) only costs
+        # re-training.
         gaps = " and ".join(missing_siblings(newest, needs_buffer))
-        if ckpt is None:
+        if ckpt is None and not from_final:
             raise SystemExit(
                 f"{newest} has no {gaps} and no older checkpoint in {run_dir} is "
                 "complete; nothing here can be resumed from"
             )
         print(
             f"[resume] WARNING {newest.name} has no {gaps} (killed mid-save?); "
-            f"resuming from {ckpt.name} and re-training the steps in between"
+            f"resuming from {FINAL_MODEL if from_final else ckpt.name} and "
+            "re-training the steps in between"
         )
-
-    # A finished run's finals sit past its last periodic checkpoint — the budget
-    # is met at a rollout boundary, not a checkpoint one — so extending one has
-    # to restart from the finals or it silently discards that tail.
-    finals_on_disk = (run_dir / FINAL_MODEL).exists() and (run_dir / FINAL_VECNORM).exists()
-    final_steps = load_final_steps(run_dir) if resume and finals_on_disk else None
-    from_final = final_steps is not None and (
-        ckpt is None or final_steps >= checkpoint_steps(ckpt)
-    )
 
     if from_final:
         source = run_dir / FINAL_MODEL
         source_vecnorm = run_dir / FINAL_VECNORM
         source_buffer = run_dir / FINAL_REPLAY_BUFFER
-        if needs_buffer and not source_buffer.exists():
-            raise SystemExit(
-                f"{source} has no {FINAL_REPLAY_BUFFER} beside it; resuming SAC "
-                "from it would restart from an empty buffer"
-            )
     elif ckpt is not None:
         source = ckpt
         source_vecnorm = vecnormalize_for(ckpt)
@@ -242,6 +255,10 @@ def run_training(cfg: DictConfig) -> Path:
                 "wandb artifact log and hub upload skipped"
             )
         else:
+            # Withdrawn first: from here until the new marker is written the
+            # finals are mid-replacement, and the old count would vouch for a
+            # set that is half this leg's and half the previous one's.
+            clear_final_steps(run_dir)
             model.save(run_dir / FINAL_MODEL)
             venv.save(str(run_dir / FINAL_VECNORM))
             if needs_buffer:
