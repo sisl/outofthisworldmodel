@@ -20,6 +20,7 @@ import torch
 import wandb
 from dotenv import load_dotenv
 from hydra import compose, initialize_config_dir
+from hydra.errors import MissingConfigException
 from omegaconf import DictConfig, OmegaConf
 
 from owm.baselines.rl.run_state import CHECKPOINT_DIR, FINAL_REPLAY_BUFFER
@@ -41,12 +42,18 @@ DEFAULT_MAX_SECONDS = 7200.0
 # algorithm, so a sweep can tune a new SB3 argument by naming it and nothing
 # else. `algo` is not routable: it picks the config group the rest lands in.
 ALGO_KEY = "algo"
+# Like algo, not routable: it names a config group to compose, not a value to
+# write into the composed config. Sweeps tune hyperparameters for the real
+# training distribution, the random-port goal one, so that is the default; a
+# pixel spec pins the variant of it that renders at the extractor's input size.
+ENVIRONMENTS_KEY = "environments"
+DEFAULT_ENVIRONMENTS = "iss_coop_goal_ports"
 ROUTES = {
     "trial_timesteps": "rl.total_timesteps",
     "obs": "rl.obs",
     "seed": "seed",
 }
-RESERVED_KEYS = frozenset({ALGO_KEY, *ROUTES})
+RESERVED_KEYS = frozenset({ALGO_KEY, ENVIRONMENTS_KEY, *ROUTES})
 
 _MISSING = object()
 
@@ -82,20 +89,32 @@ def build_cfg(config: Mapping[str, Any], run_dir: Path) -> DictConfig:
             f"steps to report the objective {EVAL_REPORTS} times"
         )
 
+    environments = str(config.get(ENVIRONMENTS_KEY, DEFAULT_ENVIRONMENTS))
     with initialize_config_dir(config_dir=CONF_DIR, version_base="1.3"):
-        # Sweeps tune hyperparameters for the real training environment, the
-        # random-port goal distribution, not the group default single-port one.
-        cfg = compose(
-            config_name="config",
-            overrides=[f"rl={algo}", "environments=iss_coop_goal_ports"],
-        )
+        try:
+            cfg = compose(
+                config_name="config",
+                overrides=[f"rl={algo}", f"environments={environments}"],
+            )
+        except MissingConfigException as exc:
+            # A named group that does not exist is a typo or a spec written
+            # against a checkout that lacks the config. Hydra's own error is
+            # loud but arrives as a stack trace mid-agent; the trial should
+            # say which key was wrong and what the alternatives are.
+            available = sorted(p.stem for p in Path(CONF_DIR).glob("environments/*.yaml"))
+            raise SystemExit(
+                f"sweep config sets {ENVIRONMENTS_KEY}={environments!r}, but "
+                f"conf/environments has no such config — available: {available}"
+            ) from exc
 
     # Assigned rather than passed as hydra overrides: the sweeps tune SB3
     # arguments the group defaults do not all spell out (clip_range, tau, ...),
     # and both hydra's override grammar and struct mode reject a new key.
     OmegaConf.set_struct(cfg, False)
     for key, value in config.items():
-        if key == ALGO_KEY:
+        if key in (ALGO_KEY, ENVIRONMENTS_KEY):
+            # Both were spent on the compose above; writing them into the
+            # composed config would replace a whole node with its own name.
             continue
         path = ROUTES.get(key)
         if path is None:

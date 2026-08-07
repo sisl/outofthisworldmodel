@@ -298,3 +298,37 @@ def test_the_wall_clock_budget_covers_setup_too(no_wandb):
     callback._on_training_start()
 
     assert callback._on_step() is False
+
+
+def test_environments_defaults_to_the_random_port_training_distribution(tmp_path: Path):
+    cfg = build_cfg(PPO_TRIAL, tmp_path / "run")
+    assert len(cfg.environments.dock.ports) == 5
+    # No render block at all, not an empty one: a spec that says nothing about
+    # environments composes exactly what it composed before this key existed.
+    assert "render" not in cfg.environments
+
+
+def test_a_spec_can_pin_the_env_config_group_it_trains_on(tmp_path: Path):
+    # What a pixel sweep needs: the same port distribution, rendered at the
+    # size the frozen extractor reads.
+    cfg = build_cfg(
+        {**PPO_TRIAL, "environments": "iss_coop_goal_ports_render224"}, tmp_path / "run"
+    )
+    assert cfg.environments.render == {"image_width": 224, "image_height": 224}
+    assert cfg.environments.dock.ports == build_cfg(
+        PPO_TRIAL, tmp_path / "run2"
+    ).environments.dock.ports
+    # Spent on the compose, not written into the config it produced.
+    assert "environments" not in cfg.rl.hyperparams
+
+
+def test_an_env_config_this_checkout_lacks_fails_before_anything_is_trained(tmp_path: Path):
+    with pytest.raises(SystemExit, match="conf/environments has no such config"):
+        build_cfg({**PPO_TRIAL, "environments": "iss_coop_goal_pixels"}, tmp_path / "run")
+
+
+def test_environments_is_reserved_rather_than_an_sb3_hyperparameter():
+    assert sweep_trial.ENVIRONMENTS_KEY in RESERVED_KEYS
+    # Not routable: it names a group to compose, so OmegaConf.update would
+    # replace the whole environments node with its own name.
+    assert sweep_trial.ENVIRONMENTS_KEY not in sweep_trial.ROUTES
