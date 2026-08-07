@@ -6,18 +6,23 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-import gymnasium as gym
 import numpy as np
 import wandb
 from owm_envs.envs.iss.config import ISSConfig
 from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.vec_env import VecEnv
 
-from owm.envs.factory import make_iss_env
+from owm.envs.factory import make_vec_env
 
 # The sweep's objective. Bayes reads its last value, hyperband reads the
 # series, so the same key carries both the periodic and the final report.
 OBJECTIVE = "sweep/eval_mean_return"
 STEP_METRIC = "sweep/global_step"
+
+# Widest the eval env gets. The periodic report is 5 episodes, so 5 envs run it
+# in one round and the 20-episode final one in four, while the training workers
+# are idle anyway.
+EVAL_ENVS = 5
 
 
 class EvalReportCallback(BaseCallback):
@@ -38,6 +43,7 @@ class EvalReportCallback(BaseCallback):
         final_episodes: int,
         seed: int,
         max_episode_steps: int | None = None,
+        vec: str = "subproc",
     ):
         super().__init__()
         # Caught at registration, i.e. at launch: an eval of no episodes only
@@ -60,8 +66,9 @@ class EvalReportCallback(BaseCallback):
         self._final_episodes = final_episodes
         self._seed = seed
         self._max_episode_steps = max_episode_steps
+        self._vec = vec
         self._next_at = every_steps
-        self._env: gym.Env | None = None
+        self._env: VecEnv | None = None
 
     def _on_training_start(self) -> None:
         # A resumed run boots at num_timesteps far past every_steps, which the
@@ -111,31 +118,63 @@ class EvalReportCallback(BaseCallback):
         wandb.log(payload)
 
     def _evaluate(self, episodes: int) -> tuple[float, float]:
+        venv = self._eval_env()
+        # The policy sees normalized observations in training, so evaluating it
+        # on raw ones would measure a transform mismatch, not the policy.
+        # normalize_obs is a pure transform: eval never moves the statistics.
+        vecnorm = self.model.get_vec_normalize_env()
+        returns: list[float] = []
+        successes: list[bool] = []
+        # Episodes run a vec-width at a time. One at a time left the training
+        # workers idle and made a report cost more than the training it was
+        # reporting on.
+        for first in range(0, episodes, venv.num_envs):
+            batch = min(venv.num_envs, episodes - first)
+            batch_returns, batch_successes = self._rollout(venv, vecnorm, first)
+            returns.extend(batch_returns[:batch])
+            successes.extend(batch_successes[:batch])
+        return float(np.mean(returns)), sum(successes) / episodes
+
+    def _rollout(self, venv, vecnorm, first_episode: int) -> tuple[list[float], list[bool]]:
+        """Run one episode per env, seeded as episodes first_episode + i."""
+        # VecEnv.seed hands env i seed+i at the next reset, which is exactly the
+        # numbering an episode-at-a-time loop produced, so a trial's score does
+        # not depend on how wide its eval env happens to be.
+        venv.seed(self._seed + first_episode)
+        obs = venv.reset()
+        width = venv.num_envs
+        ep_return = np.zeros(width, dtype=np.float64)
+        success = np.zeros(width, dtype=bool)
+        # A vec env auto-resets a finished env, so anything it reports after
+        # that belongs to an episode nobody asked for.
+        live = np.ones(width, dtype=bool)
+        steps = 0
+        while live.any():
+            norm = vecnorm.normalize_obs(obs) if vecnorm is not None else obs
+            actions, _ = self.model.predict(norm, deterministic=True)
+            obs, rewards, dones, infos = venv.step(actions)
+            steps += 1
+            ep_return += rewards * live
+            for index in np.flatnonzero(live & dones):
+                success[index] = bool(infos[index].get("success"))
+            live &= ~dones
+            if self._max_episode_steps is not None and steps >= self._max_episode_steps:
+                break
+        return ep_return.tolist(), success.tolist()
+
+    def _eval_env(self) -> VecEnv:
         if self._env is None:
             # One env for the whole run: rebuilding it per report would re-pay
             # the simulator's setup cost every cadence. Built here rather than
             # at registration because training writes the record this reads.
-            self._env = make_iss_env(ISSConfig.from_yaml(self._env_record), seed=self._seed)
-        # The policy sees normalized observations in training, so evaluating it
-        # on raw ones would measure a transform mismatch, not the policy.
-        vecnorm = self.model.get_vec_normalize_env()
-        returns: list[float] = []
-        successes = 0
-        for episode in range(episodes):
-            obs, _ = self._env.reset(seed=self._seed + episode)
-            done, ep_return, steps, info = False, 0.0, 0, {}
-            while not done:
-                norm = vecnorm.normalize_obs(obs) if vecnorm is not None else obs
-                action, _ = self.model.predict(norm, deterministic=True)
-                obs, reward, term, trunc, info = self._env.step(action)
-                ep_return += float(reward)
-                steps += 1
-                done = term or trunc
-                if self._max_episode_steps is not None and steps >= self._max_episode_steps:
-                    done = True
-            returns.append(ep_return)
-            successes += int(bool(info.get("success")))
-        return float(np.mean(returns)), successes / episodes
+            env_conf = ISSConfig.from_yaml(self._env_record).model_dump(mode="json")
+            self._env = make_vec_env(
+                env_conf,
+                n_envs=min(self._episodes, EVAL_ENVS),
+                seed=self._seed,
+                vec=self._vec,
+            )
+        return self._env
 
 
 class TrialTimeoutCallback(BaseCallback):

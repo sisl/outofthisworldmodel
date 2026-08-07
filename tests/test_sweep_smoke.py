@@ -38,6 +38,7 @@ def test_a_trial_trains_inside_the_run_its_agent_opened(tmp_path: Path, monkeypa
         final_episodes=1,
         seed=99,
         max_episode_steps=3,  # the env's own limit is 7200 steps
+        vec="dummy",
     )
     run_dir = run_training(cfg, extra_callbacks=[callback])
 

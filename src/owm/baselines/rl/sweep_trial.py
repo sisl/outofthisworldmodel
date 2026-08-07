@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+import torch
 import wandb
 from dotenv import load_dotenv
 from hydra import compose, initialize_config_dir
@@ -114,6 +115,17 @@ def build_cfg(config: Mapping[str, Any], run_dir: Path) -> DictConfig:
     cfg.rl.n_envs = RESOURCES[algo]["n_envs"]
     cfg.rl.vec = RESOURCES[algo]["vec"]
     cfg.rl.device = RESOURCES[algo]["device"]
+    # SB3's get_device falls back to CPU without failing, so an agent launched
+    # against the wrong sweep id -- `sweep-agent <sac-id> ppo_vector` exports
+    # CUDA_VISIBLE_DEVICES="" -- would train every SAC trial on CPU and report
+    # the results as if they were the GPU run that was asked for.
+    if str(cfg.rl.device).startswith("cuda") and not torch.cuda.is_available():
+        raise SystemExit(
+            f"{algo} trials need {cfg.rl.device} but torch reports no CUDA "
+            "device. The usual cause is an agent started against another "
+            "sweep's id: `just sweep-agent <id> ppo_vector` hides the GPUs, so "
+            "check that this agent's spec name matches the sweep it joined."
+        )
     # A trial is disposable and never resumed, so periodic checkpoints would
     # only cost disk — SAC's carry a replay buffer of hundreds of MB each.
     cfg.rl.checkpoint.save_freq = int(cfg.rl.total_timesteps)

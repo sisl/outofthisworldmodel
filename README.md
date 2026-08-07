@@ -99,6 +99,13 @@ than training vector observations while reporting that it swept the mode.
 A spec that pins no `trial_timesteps` is refused the same way, since it
 would otherwise inherit `conf/rl`'s multi-million-step budget.
 
+Eval episodes run five-at-a-time through their own `SubprocVecEnv`, built once
+per trial from the run's `env_config.yaml`. One env at a time left the training
+workers idle and made a report cost more than the training it reported on. The
+width does not change what is measured — same seeds, same raw rewards, same
+`normalize_obs` transform — which `pocs/eval_width_benchmark.py` checks by
+scoring the same policy at both widths.
+
 Trials write to `runs/sweeps/<algo>/<wandb_run_id>/`. Checkpoints and the
 final replay buffer are deleted when the trial ends — nothing resumes a
 trial, and a few dozen SAC buffers would fill the disk — leaving the final

@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from owm_envs.envs.iss.config import ISSConfig
 
-from owm.baselines.rl import sweep_callbacks
+from owm.baselines.rl import sweep_callbacks, sweep_trial
 from owm.baselines.rl.run_state import CHECKPOINT_DIR, FINAL_MODEL, FINAL_REPLAY_BUFFER
 from owm.baselines.rl.sweep_callbacks import EvalReportCallback, TrialTimeoutCallback
 from owm.baselines.rl.sweep_trial import (
@@ -110,6 +110,24 @@ def test_sac_trials_stay_on_the_gpu_they_are_allowed(tmp_path: Path):
     assert cfg.seed == 0  # sweeps that do not sweep the seed still get one
 
 
+def test_a_gpu_trial_on_a_box_with_no_gpu_fails_instead_of_using_the_cpu(
+    tmp_path: Path, monkeypatch
+):
+    # `just sweep-agent <sac-id> ppo_vector` exports CUDA_VISIBLE_DEVICES="",
+    # and SB3's get_device would quietly hand the trial a CPU — a night of SAC
+    # results reported as the GPU run somebody asked for.
+    monkeypatch.setattr(sweep_trial.torch.cuda, "is_available", lambda: False)
+
+    with pytest.raises(SystemExit, match="no CUDA device"):
+        build_cfg({"algo": "sac", "trial_timesteps": 500_000}, tmp_path / "run")
+
+
+def test_a_cpu_trial_does_not_care_whether_a_gpu_exists(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(sweep_trial.torch.cuda, "is_available", lambda: False)
+
+    assert build_cfg(PPO_TRIAL, tmp_path / "run").rl.device == "cpu"
+
+
 def test_an_unknown_algo_fails_before_anything_is_trained(tmp_path: Path):
     with pytest.raises(SystemExit, match="expected one of"):
         build_cfg({"algo": "dqn"}, tmp_path / "run")
@@ -182,37 +200,58 @@ def test_a_report_of_no_episodes_is_refused_at_registration():
 
 
 class _ZeroPolicy:
-    """Enough of an SB3 model for the callback to roll an episode out."""
+    """Enough of an SB3 model for the callback to roll episodes out."""
 
     def __init__(self, action_dim: int):
-        self._action = np.zeros(action_dim, dtype=np.float32)
+        self._action_dim = action_dim
 
     def get_vec_normalize_env(self):
         return None
 
     def predict(self, obs, deterministic: bool):
-        return self._action, None
+        return np.zeros((len(obs), self._action_dim), dtype=np.float32), None
+
+
+def _recorded_run(tmp_path: Path, max_steps: int = 4) -> Path:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    ISSConfig(max_steps=max_steps).to_yaml(run_dir / "env_config.yaml")
+    return run_dir
 
 
 def test_the_eval_env_is_the_one_the_run_recorded_training_on(tmp_path: Path):
     # The record is what training actually trained on; re-resolving
     # environments=from_dataset here instead could score the trial on dynamics
     # it never saw, because that ref can move between two resolutions.
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    ISSConfig(max_steps=4).to_yaml(run_dir / "env_config.yaml")
-
-    callback = _eval_callback(run_dir=run_dir)
+    callback = _eval_callback(run_dir=_recorded_run(tmp_path), vec="dummy")
     callback.model = _ZeroPolicy(action_dim=6)
 
-    mean_return, success_rate = callback._evaluate(episodes=1)
     try:
+        mean_return, success_rate = callback._evaluate(episodes=1)
         # Truncated by the recorded horizon, not by any default of the sweep's.
-        assert callback._env.unwrapped.cfg.max_steps == 4
+        assert callback._env.get_attr("unwrapped")[0].cfg.max_steps == 4
         assert isinstance(mean_return, float)
         assert success_rate == 0.0
     finally:
         callback._env.close()
+
+
+def test_the_score_does_not_depend_on_how_wide_the_eval_env_is(tmp_path: Path):
+    # Episodes run a vec-width at a time for throughput, so a trial's score has
+    # to come out the same whether they ran side by side or one after another —
+    # otherwise widening the eval would silently rescore the sweep.
+    run_dir = _recorded_run(tmp_path)
+    scores = []
+    for episodes in (1, 2):  # eval width is min(episodes, EVAL_ENVS)
+        callback = _eval_callback(run_dir=run_dir, episodes=episodes, vec="dummy")
+        callback.model = _ZeroPolicy(action_dim=6)
+        try:
+            assert callback._eval_env().num_envs == episodes
+            scores.append(callback._evaluate(episodes=2))
+        finally:
+            callback._env.close()
+
+    assert scores[0] == scores[1]
 
 
 def test_a_trial_ends_when_its_wall_clock_budget_runs_out(no_wandb):
