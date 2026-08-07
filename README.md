@@ -34,6 +34,8 @@ just train-sac [ARGS...]     # fresh SAC run   (owm.baselines.rl.train rl=sac)
 just resume RUN_DIR [ARGS...]  # resume a crashed/stopped run
 just smoke                   # tiny offline PPO run, no hub upload
 just eval CKPT [ARGS...]     # evaluate a checkpoint
+just sweep-init ALGO         # create a wandb sweep, print its id
+just sweep-agent ID ALGO     # run one sweep agent (see Sweeps below)
 just test                    # pytest, network tests deselected
 just test-network            # pytest -m network only
 ```
@@ -49,6 +51,62 @@ as-run config instead of the committed inline config, add
 follows whatever horizon the data carries. Note: the `-trial` dataset
 predates the 360 s horizon change (`max_steps` 12000 vs the current 7200),
 so evaluating against it needs a matching env override.
+
+## Sweeps
+
+Bayesian hyperparameter search for both baselines, run by wandb:
+
+```bash
+just sweep-init ppo               # prints a sweep id
+just sweep-agent <sweep_id> ppo   # one agent; run it under nohup/tmux
+just sweep-init sac
+just sweep-agent <sweep_id> sac
+```
+
+Each trial trains 500k steps, reports a deterministic 5-episode eval every
+100k, and finishes with a 20-episode one. The sweep maximizes
+`sweep/eval_mean_return` — eval return, not a training loss, because losses
+are not comparable across hyperparameters (a small clip range or a large
+`tau` changes what the loss *means*), while the deterministic return is the
+same measurement of docking behaviour whatever produced the policy.
+
+`sweeps/ppo.yaml` and `sweeps/sac.yaml` are wandb sweep specs, deliberately
+outside `conf/`: a `conf/sweep/` directory would show up in hydra's config
+group discovery as a group nothing ever selects. Each spec pins the
+algorithm and seed and searches the rest; the per-trial entry point is
+`owm.baselines.rl.sweep_trial`, which reads `wandb.config`, maps every
+non-control key onto `rl.hyperparams.*`, and trains under the run the agent
+already opened (`external_wandb=true` — see below). Hyperband early
+termination bands on those periodic reports, so `min_iter: 3` means three
+reports, i.e. 300k steps, not three epochs.
+
+Trials write to `runs/sweeps/<algo>/<wandb_run_id>/`. Checkpoints and the
+final replay buffer are deleted when the trial ends — nothing resumes a
+trial, and a few dozen SAC buffers would fill the disk — leaving the final
+model and its VecNormalize stats.
+
+Two bounds keep a trial from running away: `rl.total_timesteps=500000`, and
+`SWEEP_TRIAL_MAX_SECONDS` (default 7200), which ends training gracefully so
+the trial still reports an objective and logs `sweep/timed_out=1`. Agents
+themselves run until stopped; stop them at the deadline with `Ctrl-C`
+(SIGINT), which lets the trial in flight finish its final eval.
+
+`just sweep-agent` pins the devices: PPO runs with `CUDA_VISIBLE_DEVICES=""`
+(SB3's `MlpPolicy` PPO is faster on CPU anyway), SAC with
+`CUDA_VISIBLE_DEVICES="0"` and `rl.device=cuda:0`.
+
+### external_wandb
+
+`external_wandb=true` tells `run_training` that its caller already opened the
+wandb run and will close it: it skips `wandb.init`/`wandb.finish` and the
+`wandb_run_id.txt` bookkeeping, and logs into the active run instead. Sweep
+trials need this because the run the agent creates *is* the trial — a second
+run would split the history and hide the objective from the sweep
+controller. Since `sync_tensorboard` is a `wandb.init` argument, the caller
+owns that too: `sweep_trial` passes `sync_tensorboard=True`. Run dirs are
+still written exactly as usual, so a trial's artifacts read like any other
+run's; only the resume path is unavailable, which is what makes a trial
+disposable.
 
 ### Manual publish retry
 

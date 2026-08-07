@@ -1,0 +1,51 @@
+# wandb Bayesian sweep over PPO on the ISS docking env.
+#
+#   just sweep-init ppo          # prints the sweep id
+#   just sweep-agent <id> ppo    # one agent, CPU only
+#
+# These specs live outside conf/ because they are wandb sweep files, not hydra
+# configs: a conf/sweep/ directory would appear in hydra's group discovery and
+# read as a config group nothing ever selects.
+program: src/owm/baselines/rl/sweep_trial.py
+command:
+  - ${env}
+  - uv
+  - run
+  - python
+  - -m
+  - owm.baselines.rl.sweep_trial
+method: bayes
+metric:
+  name: sweep/eval_mean_return
+  goal: maximize
+early_terminate:
+  type: hyperband
+  min_iter: 3   # in reports, not epochs: one per 100k steps, six per trial
+parameters:
+  algo:
+    value: ppo
+  seed:
+    value: 0
+  learning_rate:
+    distribution: log_uniform_values
+    min: 1.0e-5
+    max: 1.0e-3
+  n_steps:
+    values: [512, 1024, 2048, 4096]
+  batch_size:
+    values: [256, 512, 1024]
+  gamma:
+    # dt=50 ms, so even 0.995 only looks ~10 s ahead; lower is myopic here.
+    values: [0.995, 0.999, 0.9995]
+  gae_lambda:
+    distribution: uniform
+    min: 0.9
+    max: 0.98
+  ent_coef:
+    distribution: log_uniform_values
+    min: 1.0e-8
+    max: 1.0e-2
+  clip_range:
+    values: [0.1, 0.2, 0.3]
+  n_epochs:
+    values: [5, 10, 20]
