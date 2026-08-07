@@ -42,6 +42,7 @@ from owm.baselines.rl.run_state import (
 )
 from owm.baselines.rl.video import VideoEvalCallback
 from owm.envs.factory import iss_config, make_vec_env
+from owm.envs.resnet_obs import extractor_kwargs
 
 load_dotenv()
 
@@ -87,6 +88,17 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
         raise SystemExit(
             "hub.upload=true but hub.repo_id is empty (set OWM_HF_MODEL_REPO in "
             ".env or pass hub.repo_id=... / hub.upload=false)"
+        )
+
+    # .get, not attribute access: a run started before rl.obs existed resumes
+    # from a saved config that has no such key, and it trained on vectors.
+    obs_mode = str(cfg.rl.get("obs", "vector"))
+    if obs_mode == "vector_resnet" and cfg.video.enabled:
+        # Also checked at launch rather than at the first recording, hours in.
+        raise SystemExit(
+            "rl.obs=vector_resnet with video.enabled=true: the video env is built "
+            "with vector observations, so its rollout would hand the policy a "
+            "25-dim observation it cannot read (set video.enabled=false)"
         )
 
     # Only meaningful for the run this function owns; an external run's id is
@@ -206,12 +218,23 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
     # each would otherwise re-download it, and could disagree about the result.
     env_conf = iss_cfg.model_dump(mode="json")
 
-    venv = make_vec_env(env_conf, cfg.rl.n_envs, cfg.seed, vec=cfg.rl.vec)
+    venv = make_vec_env(
+        env_conf,
+        cfg.rl.n_envs,
+        cfg.seed,
+        vec=cfg.rl.vec,
+        obs_mode=obs_mode,
+        resnet=extractor_kwargs(cfg.rl) if obs_mode == "vector_resnet" else None,
+    )
     if source is not None:
         venv = VecNormalize.load(str(source_vecnorm), venv)
     else:
         # Position obs are O(100 m) while rates are O(1e-3); normalization is
         # load-bearing. Reward normalization also tames the -1e6 collision spike.
+        # Under vector_resnet the embedding channels are normalized by the same
+        # running statistics, which is what a frozen feature wants: their scale
+        # is whatever ImageNet happened to give them, and no gradient reaches
+        # back to fix it.
         venv = VecNormalize(
             venv, norm_obs=True, norm_reward=True, clip_obs=10.0, gamma=cfg.rl.hyperparams.gamma
         )

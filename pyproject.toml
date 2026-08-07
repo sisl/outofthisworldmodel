@@ -17,6 +17,7 @@ dependencies = [
     "tensorboard>=2.15",
     "moviepy>=1.0",
     "imageio[ffmpeg]>=2.31",
+    "torchvision>=0.20",
 ]
 
 [tool.uv.sources]
@@ -36,7 +37,8 @@ dev = ["pytest>=8.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-m 'not network'"
+addopts = "-m 'not network and not render'"
 markers = [
     "network: tests that download from Hugging Face (run explicitly with -m network)",
+    "render: tests that rasterize frames, so they need a GL stack and the owm-envs render assets on disk -- those are git-lfs tracked, and a uv install without lfs smudging leaves pointer files (run explicitly with -m render)",
 ]

@@ -25,6 +25,7 @@ from omegaconf import DictConfig, OmegaConf
 from owm.baselines.rl.run_state import CHECKPOINT_DIR, FINAL_REPLAY_BUFFER
 from owm.baselines.rl.sweep_callbacks import EvalReportCallback, TrialTimeoutCallback
 from owm.baselines.rl.train import run_training
+from owm.envs.resnet_obs import extractor_kwargs
 
 load_dotenv()
 
@@ -182,6 +183,7 @@ def main() -> None:
 
         run_dir = SWEEP_RUNS_DIR / str(config.get("algo", "unknown")) / run.id
         cfg = build_cfg(config, run_dir)
+        obs_mode = str(cfg.rl.obs)
         callbacks = [
             EvalReportCallback(
                 run_dir=run_dir,
@@ -189,6 +191,8 @@ def main() -> None:
                 episodes=EVAL_EPISODES,
                 final_episodes=FINAL_EVAL_EPISODES,
                 seed=cfg.seed + 10_000,  # never the training seeds
+                obs_mode=obs_mode,
+                resnet=extractor_kwargs(cfg.rl) if obs_mode == "vector_resnet" else None,
             ),
             TrialTimeoutCallback(
                 max_seconds=float(

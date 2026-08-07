@@ -77,11 +77,22 @@ def test_a_horizon_too_short_to_report_is_refused(tmp_path: Path):
         build_cfg({**PPO_TRIAL, "trial_timesteps": 8}, tmp_path / "run")
 
 
-def test_routing_an_option_this_checkout_lacks_fails_the_trial_loudly(tmp_path: Path):
-    # rl.obs lands with the pixel-observation task. Until then a sweep that
-    # asks for it must stop, not train vector obs while reporting it swept obs.
-    with pytest.raises(SystemExit, match=r"rl\.obs"):
-        build_cfg({**PPO_TRIAL, "obs": "vector_pixels"}, tmp_path / "run")
+def test_routing_an_option_this_checkout_lacks_fails_the_trial_loudly(
+    tmp_path: Path, monkeypatch
+):
+    # A routed key names an option that must already exist. Unlike a
+    # hyperparameter, which SB3 rejects the moment the model is built, a
+    # not-yet-landed option would be created here and quietly ignored, and the
+    # sweep would report having swept something it never trained.
+    monkeypatch.setitem(sweep_trial.ROUTES, "encoder", "rl.obs_encoder")
+    with pytest.raises(SystemExit, match=r"rl\.obs_encoder"):
+        build_cfg({**PPO_TRIAL, "encoder": "vit"}, tmp_path / "run")
+
+
+def test_obs_mode_routes_onto_the_rl_config(tmp_path: Path):
+    assert build_cfg(PPO_TRIAL, tmp_path / "run").rl.obs == "vector"
+    cfg = build_cfg({**PPO_TRIAL, "obs": "vector_resnet"}, tmp_path / "run")
+    assert cfg.rl.obs == "vector_resnet"
 
 
 def test_trial_config_forces_the_settings_a_sweep_cannot_choose(tmp_path: Path):

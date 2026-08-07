@@ -44,6 +44,8 @@ class EvalReportCallback(BaseCallback):
         seed: int,
         max_episode_steps: int | None = None,
         vec: str = "subproc",
+        obs_mode: str = "vector",
+        resnet: dict | None = None,
     ):
         super().__init__()
         # Caught at registration, i.e. at launch: an eval of no episodes only
@@ -67,6 +69,11 @@ class EvalReportCallback(BaseCallback):
         self._seed = seed
         self._max_episode_steps = max_episode_steps
         self._vec = vec
+        # The eval env must observe the way training does or the policy is fed
+        # an observation of the wrong width, and VecNormalize's statistics do
+        # not describe it either.
+        self._obs_mode = obs_mode
+        self._resnet = resnet
         self._next_at = every_steps
         self._env: VecEnv | None = None
 
@@ -173,6 +180,8 @@ class EvalReportCallback(BaseCallback):
                 n_envs=min(self._episodes, EVAL_ENVS),
                 seed=self._seed,
                 vec=self._vec,
+                obs_mode=self._obs_mode,
+                resnet=self._resnet,
             )
         return self._env
 
