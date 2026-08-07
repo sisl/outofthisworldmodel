@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 import hydra
@@ -15,7 +16,7 @@ from dotenv import load_dotenv
 from omegaconf import DictConfig, OmegaConf
 from owm_envs.envs.iss.config import ISSConfig
 from stable_baselines3 import PPO, SAC
-from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.vec_env import VecNormalize
 
 from owm.baselines.rl.hub import upload_run
@@ -46,9 +47,13 @@ load_dotenv()
 ALGOS = {"ppo": PPO, "sac": SAC}
 
 
-def run_training(cfg: DictConfig) -> Path:
+def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) -> Path:
     run_dir = Path(cfg.run_dir)
     resume = bool(cfg.resume)
+    # A sweep trial's run belongs to the wandb agent, which opened it before
+    # this call and closes it after: starting a second run here would split the
+    # trial's history in two and hide the objective from the sweep controller.
+    external_wandb = bool(cfg.get("external_wandb", False))
 
     if resume:
         # The run's own saved config is authoritative: hyperparameters cannot
@@ -78,10 +83,15 @@ def run_training(cfg: DictConfig) -> Path:
             ".env or pass hub.repo_id=... / hub.upload=false)"
         )
 
+    # Only meaningful for the run this function owns; an external run's id is
+    # the agent's business, and recording it here would invite a resume to
+    # reattach to a run nothing is holding open.
+    run_id = None
     if resume:
-        run_id = load_wandb_id(run_dir)
-        if run_id is None:
-            raise SystemExit(f"resume=true but {run_dir} has no wandb_run_id.txt")
+        if not external_wandb:
+            run_id = load_wandb_id(run_dir)
+            if run_id is None:
+                raise SystemExit(f"resume=true but {run_dir} has no wandb_run_id.txt")
     else:
         run_dir.mkdir(parents=True, exist_ok=True)
         # Save resolved, not raw: ${now:...} and ${oc.env:...} would re-resolve to
@@ -90,8 +100,9 @@ def run_training(cfg: DictConfig) -> Path:
             OmegaConf.create(OmegaConf.to_container(cfg, resolve=True)), run_dir / "config.yaml"
         )
 
-        run_id = wandb.util.generate_id()
-        save_wandb_id(run_dir, run_id)
+        if not external_wandb:
+            run_id = wandb.util.generate_id()
+            save_wandb_id(run_dir, run_id)
 
     # No checkpoint at all means the run crashed before its first one: there is
     # no training state to lose, so it restarts from scratch under the same
@@ -152,17 +163,26 @@ def run_training(cfg: DictConfig) -> Path:
     else:
         source = None
 
-    wandb.init(
-        id=run_id,
-        resume="must" if resume else None,
-        entity=cfg.logging.entity,
-        project=cfg.logging.project,
-        mode=cfg.logging.mode,
-        name=run_dir.name,
-        dir=str(run_dir),
-        config=OmegaConf.to_container(cfg, resolve=True),
-        sync_tensorboard=True,  # SB3 writes losses to TB; wandb mirrors them
-    )
+    if external_wandb:
+        # sync_tensorboard is a wandb.init argument, so the caller's init is
+        # what decides whether SB3's TB scalars reach wandb at all.
+        if wandb.run is None:
+            raise SystemExit(
+                "external_wandb=true but no wandb run is active; the caller must "
+                "wandb.init(sync_tensorboard=True) before run_training"
+            )
+    else:
+        wandb.init(
+            id=run_id,
+            resume="must" if resume else None,
+            entity=cfg.logging.entity,
+            project=cfg.logging.project,
+            mode=cfg.logging.mode,
+            name=run_dir.name,
+            dir=str(run_dir),
+            config=OmegaConf.to_container(cfg, resolve=True),
+            sync_tensorboard=True,  # SB3 writes losses to TB; wandb mirrors them
+        )
 
     # environments=from_dataset names a repo, not an env, so the hydra config
     # alone does not say what was trained on. Resolve it exactly once — on the
@@ -224,6 +244,7 @@ def run_training(cfg: DictConfig) -> Path:
             max_frames=cfg.video.max_frames,
             seed=cfg.seed + 10_000,  # never the training seeds
         ))
+    callbacks.extend(extra_callbacks)
 
     # rl.total_timesteps is the run's total budget, but SB3 adds the restored
     # counter to whatever it is given when reset_num_timesteps=False, so a
@@ -277,7 +298,8 @@ def run_training(cfg: DictConfig) -> Path:
                 print(f"[hub] uploaded final model: {url}")
     finally:
         venv.close()
-        wandb.finish()
+        if not external_wandb:
+            wandb.finish()
 
     return run_dir
 

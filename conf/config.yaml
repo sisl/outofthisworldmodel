@@ -12,6 +12,9 @@ seed: 0
 # rl/ because rl.total_timesteps always composes to its group default, which a
 # resume cannot tell apart from a deliberate request.
 extend_timesteps: null
+# The caller already opened the wandb run and owns its lifecycle (sweep
+# trials): training logs into that run instead of starting one of its own.
+external_wandb: false
 
 video:
   enabled: false
