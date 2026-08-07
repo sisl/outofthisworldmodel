@@ -93,26 +93,31 @@ def run_eval(cfg: DictConfig) -> dict:
 
     returns, lengths, successes, collisions = [], [], 0, 0
     frames: list[np.ndarray] = []
-    for episode in range(int(cfg.eval.episodes)):
-        obs, _ = env.reset(seed=int(cfg.seed) + episode)
-        done, ep_return, ep_len = False, 0.0, 0
-        while not done:
-            norm = vecnorm.normalize_obs(obs) if vecnorm is not None else obs
-            action, _ = model.predict(norm, deterministic=bool(cfg.eval.deterministic))
-            obs, reward, term, trunc, info = env.step(action)
-            ep_return += float(reward)
-            ep_len += 1
-            if record and episode == 0:
-                frames.append(env.render())
-            done = term or trunc
-        returns.append(ep_return)
-        lengths.append(ep_len)
-        successes += int(bool(info.get("success")))
-        collisions += int(bool(info.get("collision")))
+    # A rendering env holds a GL context; leaking it on an episode that raises
+    # would keep the window and its worker alive for the rest of the process.
+    try:
+        for episode in range(int(cfg.eval.episodes)):
+            obs, _ = env.reset(seed=int(cfg.seed) + episode)
+            done, ep_return, ep_len = False, 0.0, 0
+            while not done:
+                norm = vecnorm.normalize_obs(obs) if vecnorm is not None else obs
+                action, _ = model.predict(norm, deterministic=bool(cfg.eval.deterministic))
+                obs, reward, term, trunc, info = env.step(action)
+                ep_return += float(reward)
+                ep_len += 1
+                if record and episode == 0:
+                    frames.append(env.render())
+                done = term or trunc
+            returns.append(ep_return)
+            lengths.append(ep_len)
+            successes += int(bool(info.get("success")))
+            collisions += int(bool(info.get("collision")))
 
-    if frames:
-        imageio.mimsave(cfg.eval.video_path, frames,
-                        fps=env.metadata.get("render_fps", 20))
+        if frames:
+            imageio.mimsave(cfg.eval.video_path, frames,
+                            fps=env.metadata.get("render_fps", 20))
+    finally:
+        env.close()
 
     n = int(cfg.eval.episodes)
     results = {

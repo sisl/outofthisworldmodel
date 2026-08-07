@@ -19,6 +19,13 @@ def _drive(callback, steps):
     return recorded
 
 
+def test_video_rejects_a_frame_budget_it_cannot_record():
+    # max_frames=0 records nothing and dies in np.stack of an empty list —
+    # hours into a run. A config error should fail when the config is read.
+    with pytest.raises(ValueError, match="max_frames must be >= 1"):
+        VideoEvalCallback(env_conf={}, every_steps=100, max_frames=0, seed=0)
+
+
 def test_video_cadence_on_a_fresh_run(no_wandb):
     callback = VideoEvalCallback(env_conf={}, every_steps=100, max_frames=10, seed=0)
     callback.num_timesteps = 0

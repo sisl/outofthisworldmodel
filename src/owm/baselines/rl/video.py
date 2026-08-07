@@ -13,6 +13,10 @@ from owm.envs.factory import iss_config, make_iss_env
 class VideoEvalCallback(BaseCallback):
     def __init__(self, env_conf: dict, every_steps: int, max_frames: int, seed: int):
         super().__init__()
+        if max_frames < 1:
+            # Caught at registration, i.e. at launch: recording an empty
+            # episode only fails hours later, inside np.stack of no frames.
+            raise ValueError(f"video.max_frames must be >= 1, got {max_frames}")
         self._env_conf = env_conf
         self._every = every_steps
         self._max_frames = max_frames

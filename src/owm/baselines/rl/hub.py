@@ -21,6 +21,16 @@ _UPLOAD_FILES = (FINAL_MODEL, FINAL_VECNORM, "config.yaml")
 
 
 def upload_run(run_dir: Path, repo_id: str) -> str:
+    # allow_patterns silently uploads whatever subset happens to be there, so a
+    # crashed or half-written run would publish a model with no normalization
+    # statistics — loadable, and wrong. Check before the repo is even created.
+    missing = [name for name in _UPLOAD_FILES if not (run_dir / name).exists()]
+    if missing:
+        raise SystemExit(
+            f"{run_dir} is missing {', '.join(missing)}; refusing to publish a "
+            "partial run"
+        )
+
     api = HfApi()  # token from HF_TOKEN or the local login
     api.create_repo(repo_id, repo_type="model", private=True, exist_ok=True)
     api.upload_folder(

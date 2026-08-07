@@ -32,6 +32,49 @@ def eval_cfg(tmp_path: Path, checkpoint: str) -> DictConfig:
     return cfg
 
 
+class _EnvSpy:
+    """Delegates to a real env, recording close() and optionally blowing up."""
+
+    def __init__(self, env, fail: bool):
+        self._env = env
+        self._fail = fail
+        self.closed = False
+
+    def __getattr__(self, name):
+        return getattr(self._env, name)
+
+    def reset(self, **kwargs):
+        if self._fail:
+            raise RuntimeError("episode blew up")
+        return self._env.reset(**kwargs)
+
+    def close(self):
+        self.closed = True
+        self._env.close()
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_eval_closes_its_env(trained_run, tmp_path: Path, monkeypatch, fail: bool):
+    spied = []
+    real_make = evaluate.make_iss_env
+
+    def spy(cfg, seed, render=False):
+        spied.append(_EnvSpy(real_make(cfg, seed=seed, render=render), fail))
+        return spied[-1]
+
+    monkeypatch.setattr(evaluate, "make_iss_env", spy)
+    cfg = eval_cfg(tmp_path, str(trained_run / FINAL_MODEL))
+
+    # A rendering eval holds a GL context, so the env has to be released on
+    # the way out whether the episodes finished or raised.
+    if fail:
+        with pytest.raises(RuntimeError, match="episode blew up"):
+            run_eval(cfg)
+    else:
+        run_eval(cfg)
+    assert spied and spied[0].closed
+
+
 def test_resolve_checkpoint_local(tmp_path: Path):
     f = tmp_path / "m.zip"
     f.touch()
