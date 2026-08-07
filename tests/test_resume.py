@@ -1,7 +1,8 @@
 from pathlib import Path
 
 import pytest
-from conftest import smoke_cfg
+from conftest import CONF_DIR, SMOKE, smoke_cfg
+from hydra import compose, initialize_config_dir
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.save_util import load_from_pkl
 
@@ -17,6 +18,22 @@ from owm.baselines.rl.run_state import (
 from owm.baselines.rl.train import run_training
 
 
+def _refuse_to_train(self, *, total_timesteps, **kwargs):
+    raise AssertionError(f"resume asked for {total_timesteps} more steps")
+
+
+def bare_resume_cfg(run_dir: Path):
+    """What `just resume RUN_DIR` composes: smoke settings, no budget given."""
+    overrides = [o for o in SMOKE if not o.startswith("rl.total_timesteps")]
+    with initialize_config_dir(config_dir=CONF_DIR, version_base="1.3"):
+        cfg = compose(
+            config_name="config",
+            overrides=["rl=ppo", f"run_dir={run_dir}", "resume=true", *overrides],
+        )
+    assert cfg.rl.total_timesteps == 5_000_000 and cfg.extend_timesteps is None
+    return cfg
+
+
 def test_resume_continues_same_run(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("WANDB_MODE", "offline")
     cfg = smoke_cfg(tmp_path, "ppo", extra=["rl.checkpoint.save_freq=64"])
@@ -25,7 +42,7 @@ def test_resume_continues_same_run(tmp_path: Path, monkeypatch):
     assert first_id is not None
     seen_before = load_from_pkl(vecnormalize_for(latest_checkpoint(run_dir))).obs_rms.count
 
-    cfg2 = smoke_cfg(tmp_path, "ppo", extra=["resume=true", "rl.total_timesteps=600"])
+    cfg2 = smoke_cfg(tmp_path, "ppo", extra=["resume=true", "extend_timesteps=600"])
     run_dir2 = run_training(cfg2)
     assert run_dir2 == run_dir
     assert load_wandb_id(run_dir) == first_id  # SAME wandb run
@@ -44,6 +61,27 @@ def test_resume_continues_same_run(tmp_path: Path, monkeypatch):
     # Normalization kept accumulating over the checkpoint's statistics instead
     # of restarting from an empty running mean.
     assert load_from_pkl(run_dir / FINAL_VECNORM).obs_rms.count >= seen_before
+
+
+def test_resume_ignores_the_composed_default_budget(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("WANDB_MODE", "offline")
+    run_dir = run_training(smoke_cfg(tmp_path, "ppo"))
+    trained = PPO.load(run_dir / FINAL_MODEL, device="cpu").num_timesteps
+
+    # What `just resume RUN_DIR` composes: no budget on the command line, so
+    # rl.total_timesteps falls back to conf/rl/ppo.yaml's 5M. Adopting that as
+    # the budget would silently sign the run up for another 5M steps — which
+    # the stub turns into an immediate failure rather than an hours-long one.
+    with pytest.MonkeyPatch.context() as no_training:
+        no_training.setattr(PPO, "learn", _refuse_to_train)
+        run_training(bare_resume_cfg(run_dir))
+    assert PPO.load(run_dir / FINAL_MODEL, device="cpu").num_timesteps == trained
+
+    # extend_timesteps is the one way to raise it, and it is absolute, not an
+    # increment: the run stops at the first rollout boundary past 600.
+    run_training(smoke_cfg(tmp_path, "ppo", extra=["resume=true", "extend_timesteps=600"]))
+    extended = PPO.load(run_dir / FINAL_MODEL, device="cpu").num_timesteps
+    assert 600 <= extended < 600 + 64 * 2  # n_steps * n_envs
 
 
 def test_resume_passes_saved_id_to_wandb(tmp_path: Path, monkeypatch):
@@ -126,7 +164,7 @@ def test_sac_resume_reloads_replay_buffer(tmp_path: Path, monkeypatch):
     assert ckpt is not None and replay_buffer_for(ckpt) is not None
     filled_before = load_from_pkl(replay_buffer_for(ckpt)).pos
 
-    run_training(smoke_cfg(tmp_path, "sac", extra=["resume=true", "rl.total_timesteps=400"]))
+    run_training(smoke_cfg(tmp_path, "sac", extra=["resume=true", "extend_timesteps=400"]))
     model = SAC.load(run_dir / FINAL_MODEL, device="cpu")
     assert model.num_timesteps >= 400
     # A buffer that had been dropped instead of reloaded would hold only the
@@ -138,7 +176,7 @@ def test_sac_resume_reloads_replay_buffer(tmp_path: Path, monkeypatch):
     # restart from an empty one, so it has to fail instead.
     replay_buffer_for(latest_checkpoint(run_dir)).unlink()
     with pytest.raises(SystemExit, match="replay_buffer sibling"):
-        run_training(smoke_cfg(tmp_path, "sac", extra=["resume=true", "rl.total_timesteps=800"]))
+        run_training(smoke_cfg(tmp_path, "sac", extra=["resume=true", "extend_timesteps=800"]))
 
 
 def test_resume_before_first_checkpoint(tmp_path: Path, monkeypatch):

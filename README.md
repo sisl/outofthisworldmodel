@@ -66,6 +66,7 @@ uv run python -m owm.baselines.rl.hub <run_dir> [repo_id]
 ```
 runs/<run_name>/
   config.yaml                    resolved hydra config, written at launch
+  env_config.yaml                 concrete ISSConfig the run trained on
   wandb_run_id.txt                wandb id, so resume reattaches to the run
   checkpoints/model_<N>_steps.zip (+ vecnormalize/replay_buffer siblings)
   final_model.zip / vecnormalize.pkl
@@ -73,10 +74,18 @@ runs/<run_name>/
 
 `rl.total_timesteps` is the run's *absolute* budget, not a per-invocation
 increment: resuming a run that already met its budget is a no-op that
-leaves the final artifacts and hub upload untouched. Resuming a run that
-crashed before its first checkpoint restarts training from step 0, but into
-the *same* wandb run — wandb may warn about out-of-order steps; that's
-expected.
+leaves the final artifacts and hub upload untouched. A resume takes its
+whole config from the run's own `config.yaml`, so raising the budget needs
+`extend_timesteps=<N>` (`rl.total_timesteps=<N>` on a resume is ignored —
+it always composes to the `conf/rl/*.yaml` default, which a resume cannot
+tell apart from a deliberate request). Resuming a run that crashed before
+its first checkpoint restarts training from step 0, but into the *same*
+wandb run — wandb may warn about out-of-order steps; that's expected.
+
+If a run fails *after* its finals were written — during the wandb artifact
+log or the hub upload — a later resume sees the budget met with both finals
+present and skips publishing entirely, so the wandb artifact stays missing;
+`python -m owm.baselines.rl.hub <run_dir>` re-publishes the HF half.
 
 ## Rendering and video
 

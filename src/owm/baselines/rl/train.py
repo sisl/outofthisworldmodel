@@ -30,7 +30,7 @@ from owm.baselines.rl.run_state import (
     vecnormalize_for,
 )
 from owm.baselines.rl.video import VideoEvalCallback
-from owm.envs.factory import make_vec_env
+from owm.envs.factory import iss_config, make_vec_env
 
 load_dotenv()
 
@@ -44,23 +44,36 @@ def run_training(cfg: DictConfig) -> Path:
     if resume:
         # The run's own saved config is authoritative: hyperparameters cannot
         # silently diverge from the ones the checkpoint was trained under. Only
-        # a raised step budget carries over from the command line.
+        # extend_timesteps carries over from the command line — rl.total_timesteps
+        # always composes to its group default, so honouring it here would grow a
+        # bare resume's budget to 5M without anyone asking.
         saved = OmegaConf.load(run_dir / "config.yaml")
         saved.resume = True
-        saved.rl.total_timesteps = max(int(saved.rl.total_timesteps), int(cfg.rl.total_timesteps))
+        if cfg.get("extend_timesteps") is not None:
+            saved.rl.total_timesteps = int(cfg.extend_timesteps)
         cfg = saved
-
-        run_id = load_wandb_id(run_dir)
-        assert run_id is not None, f"resume=true but {run_dir} has no wandb_run_id.txt"
-    else:
+    elif run_dir.exists() and any(run_dir.iterdir()):
         # Refuse to write a second run's config and id over an existing run's,
         # which would leave the dir describing one run and holding another's
         # checkpoints.
-        if run_dir.exists() and any(run_dir.iterdir()):
-            raise SystemExit(
-                f"run_dir {run_dir} already contains a run; pass resume=true to "
-                "continue it or choose a new run_dir"
-            )
+        raise SystemExit(
+            f"run_dir {run_dir} already contains a run; pass resume=true to "
+            "continue it or choose a new run_dir"
+        )
+
+    # Checked before anything is written or launched: a run that trains for
+    # hours and then finds it has nowhere to publish has wasted the run.
+    if cfg.hub.upload and not cfg.hub.repo_id:
+        raise SystemExit(
+            "hub.upload=true but hub.repo_id is empty (set OWM_HF_MODEL_REPO in "
+            ".env or pass hub.repo_id=... / hub.upload=false)"
+        )
+
+    if resume:
+        run_id = load_wandb_id(run_dir)
+        if run_id is None:
+            raise SystemExit(f"resume=true but {run_dir} has no wandb_run_id.txt")
+    else:
         run_dir.mkdir(parents=True, exist_ok=True)
         # Save resolved, not raw: ${now:...} and ${oc.env:...} would re-resolve to
         # different values when a resume reloads this file.
@@ -101,6 +114,11 @@ def run_training(cfg: DictConfig) -> Path:
         config=OmegaConf.to_container(cfg, resolve=True),
         sync_tensorboard=True,  # SB3 writes losses to TB; wandb mirrors them
     )
+
+    # environments=from_dataset names a repo, not an env, so the hydra config
+    # alone does not say what was trained on. Record the concrete config the
+    # workers will each build, the way published datasets ship theirs.
+    iss_config(cfg.environments).to_yaml(run_dir / "env_config.yaml")
 
     venv = make_vec_env(cfg.environments, cfg.rl.n_envs, cfg.seed, vec=cfg.rl.vec)
     if ckpt is not None:

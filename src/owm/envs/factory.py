@@ -18,9 +18,10 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv
 
 
-def iss_config_from_dataset(repo_id: str) -> ISSConfig:
+def iss_config_from_dataset(repo_id: str, revision: str | None = None) -> ISSConfig:
     path = hf_hub_download(
-        repo_id=repo_id, filename="env_config.yaml", repo_type="dataset"
+        repo_id=repo_id, filename="env_config.yaml", repo_type="dataset",
+        revision=revision,
     )
     return ISSConfig.from_yaml(path)
 
@@ -29,7 +30,9 @@ def iss_config(env_conf: DictConfig | dict) -> ISSConfig:
     if isinstance(env_conf, DictConfig):
         env_conf = OmegaConf.to_container(env_conf, resolve=True)
     if "from_dataset_repo" in env_conf:
-        return iss_config_from_dataset(env_conf["from_dataset_repo"])
+        return iss_config_from_dataset(
+            env_conf["from_dataset_repo"], env_conf.get("from_dataset_revision")
+        )
     return ISSConfig.model_validate(env_conf)
 
 

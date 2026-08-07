@@ -8,6 +8,10 @@ run_name: ${rl.algo}_${now:%Y%m%d_%H%M%S}
 run_dir: runs/${run_name}
 resume: false
 seed: 0
+# Raise a resumed run's total_timesteps budget. Lives here rather than under
+# rl/ because rl.total_timesteps always composes to its group default, which a
+# resume cannot tell apart from a deliberate request.
+extend_timesteps: null
 
 video:
   enabled: false

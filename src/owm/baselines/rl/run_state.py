@@ -2,6 +2,7 @@
 
 Layout of a run dir:
     config.yaml                     resolved hydra config (written at launch)
+    env_config.yaml                 concrete ISSConfig the run trained on
     wandb_run_id.txt                wandb id, so resume reattaches to the run
     checkpoints/model_<N>_steps.zip           SB3 CheckpointCallback output
     checkpoints/model_replay_buffer_<N>_steps.pkl   (off-policy algos)

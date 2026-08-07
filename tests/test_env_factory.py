@@ -48,10 +48,10 @@ def test_iss_config_from_dataset_reads_shipped_yaml(tmp_path, monkeypatch):
     cfg_path = tmp_path / "env_config.yaml"
     ISSConfig(dt=0.1).to_yaml(cfg_path)
 
-    seen_repo_ids = []
+    seen = []
 
-    def fake_hf_hub_download(*, repo_id, filename, repo_type):
-        seen_repo_ids.append(repo_id)
+    def fake_hf_hub_download(*, repo_id, filename, repo_type, revision):
+        seen.append((repo_id, revision))
         assert filename == "env_config.yaml"
         assert repo_type == "dataset"
         return str(cfg_path)
@@ -60,7 +60,11 @@ def test_iss_config_from_dataset_reads_shipped_yaml(tmp_path, monkeypatch):
 
     cfg = iss_config({"from_dataset_repo": "org/name"})
     assert cfg.dt == 0.1
-    assert seen_repo_ids == ["org/name"]
+    # No revision key: the default branch, whatever the dataset's HEAD is.
+    assert seen == [("org/name", None)]
+
+    iss_config({"from_dataset_repo": "org/name", "from_dataset_revision": "v2"})
+    assert seen[-1] == ("org/name", "v2")
 
 
 @pytest.mark.network

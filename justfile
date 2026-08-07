@@ -7,7 +7,7 @@ train-ppo *ARGS:
 train-sac *ARGS:
     uv run python -m owm.baselines.rl.train rl=sac {{ARGS}}
 
-# Resume a crashed/stopped run from its run dir (same wandb run)
+# Resume a run from its dir (same wandb run); extend_timesteps=<N> raises its budget
 resume RUN_DIR *ARGS:
     uv run python -m owm.baselines.rl.train run_dir={{RUN_DIR}} resume=true {{ARGS}}
 
