@@ -13,9 +13,14 @@ import argparse
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
 from huggingface_hub import HfApi
 
 from owm.baselines.rl.run_state import FINAL_MODEL, FINAL_VECNORM
+
+# The manual-retry CLI must see the same .env the training entry points load;
+# without this, OWM_HF_MODEL_REPO is only visible under `just` (dotenv-load).
+load_dotenv()
 
 _UPLOAD_FILES = (FINAL_MODEL, FINAL_VECNORM, "config.yaml")
 
