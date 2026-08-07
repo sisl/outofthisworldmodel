@@ -27,11 +27,11 @@ sweep-init ALGO:
     uv run wandb sweep --entity "$WANDB_ENTITY" --project "$WANDB_PROJECT" \
         sweeps/{{ALGO}}.yaml
 
-# Run one sweep agent. PPO trains on CPU; SAC gets GPU 0 and only GPU 0 —
-# GPU 1 hosts somebody else's server. Stop an agent with Ctrl-C / SIGINT.
+# Run one sweep agent (PPO on CPU, SAC on GPU 0); stop it with Ctrl-C
 sweep-agent SWEEP_ID ALGO:
     #!/usr/bin/env bash
     set -euo pipefail
+    # SAC gets GPU 0 and only GPU 0: GPU 1 hosts somebody else's server.
     case "{{ALGO}}" in
         ppo) export CUDA_VISIBLE_DEVICES="" ;;
         sac) export CUDA_VISIBLE_DEVICES="0" ;;
