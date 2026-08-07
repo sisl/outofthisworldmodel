@@ -53,6 +53,11 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
     # A sweep trial's run belongs to the wandb agent, which opened it before
     # this call and closes it after: starting a second run here would split the
     # trial's history in two and hide the objective from the sweep controller.
+    # Read from the caller's config rather than the resumed run's, and so
+    # deliberately not restored by the resume below: who owns the wandb run is a
+    # property of this invocation, like extend_timesteps, not of the artifacts
+    # on disk. A run first trained under an external run has no id saved, so it
+    # can only ever be continued externally.
     external_wandb = bool(cfg.get("external_wandb", False))
 
     if resume:

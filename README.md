@@ -86,10 +86,21 @@ trial, and a few dozen SAC buffers would fill the disk — leaving the final
 model and its VecNormalize stats.
 
 Two bounds keep a trial from running away: `rl.total_timesteps=500000`, and
-`SWEEP_TRIAL_MAX_SECONDS` (default 7200), which ends training gracefully so
-the trial still reports an objective and logs `sweep/timed_out=1`. Agents
-themselves run until stopped; stop them at the deadline with `Ctrl-C`
-(SIGINT), which lets the trial in flight finish its final eval.
+`SWEEP_TRIAL_MAX_SECONDS` (default 7200), whose clock starts when the trial
+is set up, not when training does, and which ends training gracefully so the
+trial still reports an objective and logs `sweep/timed_out=1`. It is a bound
+on *training*, not on the process: the final 20-episode eval and the final
+save still run afterwards, deliberately, since a trial with no objective is
+worth nothing to the sweep. Budget a few minutes past it. Agents themselves
+run until stopped; stop them at the deadline with `Ctrl-C` (SIGINT), which
+lets the trial in flight finish its final eval.
+
+Both specs fix `seed: 0`, so the search is over hyperparameters at one
+training seed and a winner may partly have won on luck; re-run the finalists
+across several seeds before believing the ranking. For SAC, `train_freq` and
+`gradient_steps` are searched independently, which spans a 64x range of
+gradient steps per env step — the cheap and expensive ends of that range are
+not given equal wall-clock, so read its results with the time bound in mind.
 
 `just sweep-agent` pins the devices: PPO runs with `CUDA_VISIBLE_DEVICES=""`
 (SB3's `MlpPolicy` PPO is faster on CPU anyway), SAC with

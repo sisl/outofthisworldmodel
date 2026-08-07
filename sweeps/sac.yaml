@@ -20,7 +20,7 @@ metric:
   goal: maximize
 early_terminate:
   type: hyperband
-  min_iter: 3   # in reports, not epochs: one per 100k steps, six per trial
+  min_iter: 3   # in reports, not epochs: roughly one per 100k steps
 parameters:
   algo:
     value: sac

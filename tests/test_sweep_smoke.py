@@ -2,7 +2,6 @@ from pathlib import Path
 
 import wandb
 from conftest import smoke_cfg
-from omegaconf import OmegaConf
 
 from owm.baselines.rl import train
 from owm.baselines.rl.run_state import FINAL_MODEL
@@ -13,7 +12,6 @@ from owm.baselines.rl.train import run_training
 def test_a_trial_trains_inside_the_run_its_agent_opened(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("WANDB_MODE", "offline")
     cfg = smoke_cfg(tmp_path, "ppo", extra=["external_wandb=true"])
-    env_conf = OmegaConf.to_container(cfg.environments, resolve=True)
 
     # Stands in for the wandb agent, which opens the trial's run before the
     # trial's code gets to say anything.
@@ -34,7 +32,7 @@ def test_a_trial_trains_inside_the_run_its_agent_opened(tmp_path: Path, monkeypa
     monkeypatch.setattr(train.wandb, "init", second_run)
 
     callback = EvalReportCallback(
-        env_conf=env_conf,
+        run_dir=Path(cfg.run_dir),
         every_steps=100,
         episodes=1,
         final_episodes=1,

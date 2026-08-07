@@ -1,6 +1,8 @@
 from pathlib import Path
 
+import numpy as np
 import pytest
+from owm_envs.envs.iss.config import ISSConfig
 
 from owm.baselines.rl import sweep_callbacks
 from owm.baselines.rl.run_state import CHECKPOINT_DIR, FINAL_MODEL, FINAL_REPLAY_BUFFER
@@ -98,7 +100,9 @@ def _drive(callback, steps):
 
 
 def _eval_callback(**kwargs):
-    defaults = dict(env_conf={}, every_steps=100, episodes=1, final_episodes=1, seed=0)
+    defaults = dict(
+        run_dir=Path("unused"), every_steps=100, episodes=1, final_episodes=1, seed=0
+    )
     return EvalReportCallback(**{**defaults, **kwargs})
 
 
@@ -128,6 +132,40 @@ def test_a_report_of_no_episodes_is_refused_at_registration():
         _eval_callback(final_episodes=0)
 
 
+class _ZeroPolicy:
+    """Enough of an SB3 model for the callback to roll an episode out."""
+
+    def __init__(self, action_dim: int):
+        self._action = np.zeros(action_dim, dtype=np.float32)
+
+    def get_vec_normalize_env(self):
+        return None
+
+    def predict(self, obs, deterministic: bool):
+        return self._action, None
+
+
+def test_the_eval_env_is_the_one_the_run_recorded_training_on(tmp_path: Path):
+    # The record is what training actually trained on; re-resolving
+    # environments=from_dataset here instead could score the trial on dynamics
+    # it never saw, because that ref can move between two resolutions.
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    ISSConfig(max_steps=4).to_yaml(run_dir / "env_config.yaml")
+
+    callback = _eval_callback(run_dir=run_dir)
+    callback.model = _ZeroPolicy(action_dim=6)
+
+    mean_return, success_rate = callback._evaluate(episodes=1)
+    try:
+        # Truncated by the recorded horizon, not by any default of the sweep's.
+        assert callback._env.unwrapped.cfg.max_steps == 4
+        assert isinstance(mean_return, float)
+        assert success_rate == 0.0
+    finally:
+        callback._env.close()
+
+
 def test_a_trial_ends_when_its_wall_clock_budget_runs_out(no_wandb):
     now = [0.0]
     callback = TrialTimeoutCallback(max_seconds=10.0, clock=lambda: now[0])
@@ -138,4 +176,17 @@ def test_a_trial_ends_when_its_wall_clock_budget_runs_out(no_wandb):
     now[0] = 9.9
     assert callback._on_step() is True
     now[0] = 10.1
+    assert callback._on_step() is False
+
+
+def test_the_wall_clock_budget_covers_setup_too(no_wandb):
+    # Building eight subproc envs and restoring a replay buffer is trial time
+    # like any other; a deadline started at training start would hand a trial
+    # that already spent its budget on setup a fresh one to train with.
+    now = [0.0]
+    callback = TrialTimeoutCallback(max_seconds=10.0, clock=lambda: now[0])
+    callback.num_timesteps = 0
+    now[0] = 11.0  # setup ran long; training has not begun
+    callback._on_training_start()
+
     assert callback._on_step() is False

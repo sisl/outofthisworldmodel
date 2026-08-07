@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
 import wandb
+from owm_envs.envs.iss.config import ISSConfig
 from stable_baselines3.common.callbacks import BaseCallback
 
-from owm.envs.factory import iss_config, make_iss_env
+from owm.envs.factory import make_iss_env
 
 # The sweep's objective. Bayes reads its last value, hyperband reads the
 # series, so the same key carries both the periodic and the final report.
@@ -30,7 +32,7 @@ class EvalReportCallback(BaseCallback):
 
     def __init__(
         self,
-        env_conf: dict,
+        run_dir: Path,
         every_steps: int,
         episodes: int,
         final_episodes: int,
@@ -47,7 +49,12 @@ class EvalReportCallback(BaseCallback):
             )
         if every_steps < 1:
             raise ValueError(f"every_steps must be >= 1, got {every_steps}")
-        self._env_conf = env_conf
+        # The env is taken from the run's own env_config.yaml rather than
+        # re-resolved from the hydra config: training writes that file as the
+        # record of what it actually trained on, and an environments=
+        # from_dataset ref can move between two resolutions — which would score
+        # the trial on dynamics it never saw.
+        self._env_record = Path(run_dir) / "env_config.yaml"
         self._every = every_steps
         self._episodes = episodes
         self._final_episodes = final_episodes
@@ -79,11 +86,14 @@ class EvalReportCallback(BaseCallback):
     def _on_training_end(self) -> None:
         # Runs even when another callback ended training early, so a trial that
         # hit its time bound still reports an objective instead of dropping out
-        # of the sweep's ranking entirely.
-        self._report(self._final_episodes, final=True)
-        if self._env is not None:
-            self._env.close()
-            self._env = None
+        # of the sweep's ranking entirely. The env has to be closed even when
+        # that last report raises, or its worker outlives the trial.
+        try:
+            self._report(self._final_episodes, final=True)
+        finally:
+            if self._env is not None:
+                self._env.close()
+                self._env = None
 
     def _report(self, episodes: int, final: bool) -> None:
         mean_return, success_rate = self._evaluate(episodes)
@@ -103,8 +113,9 @@ class EvalReportCallback(BaseCallback):
     def _evaluate(self, episodes: int) -> tuple[float, float]:
         if self._env is None:
             # One env for the whole run: rebuilding it per report would re-pay
-            # the simulator's setup cost every cadence.
-            self._env = make_iss_env(iss_config(self._env_conf), seed=self._seed)
+            # the simulator's setup cost every cadence. Built here rather than
+            # at registration because training writes the record this reads.
+            self._env = make_iss_env(ISSConfig.from_yaml(self._env_record), seed=self._seed)
         # The policy sees normalized observations in training, so evaluating it
         # on raw ones would measure a transform mismatch, not the policy.
         vecnorm = self.model.get_vec_normalize_env()
@@ -143,10 +154,10 @@ class TrialTimeoutCallback(BaseCallback):
             raise ValueError(f"max_seconds must be > 0, got {max_seconds}")
         self._max_seconds = max_seconds
         self._clock = clock
-        self._deadline = float("inf")
-
-    def _on_training_start(self) -> None:
-        self._deadline = self._clock() + self._max_seconds
+        # Runs from construction, not from training start: building 8 subproc
+        # envs and restoring a replay buffer is trial time like any other, and
+        # a trial that spent its budget there has none left to train with.
+        self._deadline = clock() + max_seconds
 
     def _on_step(self) -> bool:
         if self._clock() < self._deadline:

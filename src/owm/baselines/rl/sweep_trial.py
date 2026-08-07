@@ -24,7 +24,6 @@ from omegaconf import DictConfig, OmegaConf
 from owm.baselines.rl.run_state import CHECKPOINT_DIR, FINAL_REPLAY_BUFFER
 from owm.baselines.rl.sweep_callbacks import EvalReportCallback, TrialTimeoutCallback
 from owm.baselines.rl.train import run_training
-from owm.envs.factory import iss_config
 
 load_dotenv()
 
@@ -102,38 +101,42 @@ def main() -> None:
     # this init is the trial's only one, so SB3's TB scalars reach wandb only
     # if it asks for them.
     run = wandb.init(sync_tensorboard=True)
-    config = dict(run.config)
-    if os.environ.get("WANDB_SWEEP_ID") and not config:
-        # Training the group defaults instead would look like a working sweep
-        # of identical trials rather than a broken one.
-        raise SystemExit(
-            "running under a sweep agent but wandb.config is empty: the agent "
-            "passed no hyperparameters for this trial"
-        )
-
-    run_dir = SWEEP_RUNS_DIR / str(config.get("algo", "unknown")) / run.id
-    cfg = build_cfg(config, run_dir)
-    callbacks = [
-        EvalReportCallback(
-            env_conf=iss_config(cfg.environments).model_dump(mode="json"),
-            every_steps=EVAL_EVERY_STEPS,
-            episodes=EVAL_EPISODES,
-            final_episodes=FINAL_EVAL_EPISODES,
-            seed=cfg.seed + 10_000,  # never the training seeds
-        ),
-        TrialTimeoutCallback(
-            max_seconds=float(
-                os.environ.get("SWEEP_TRIAL_MAX_SECONDS", DEFAULT_MAX_SECONDS)
-            )
-        ),
-    ]
-
+    # Everything past the init goes through finish, including the config checks
+    # below: a trial that dies on its way to training still has an open run,
+    # and the agent will not start the next one until this one is closed out.
     try:
-        run_training(cfg, extra_callbacks=callbacks)
+        config = dict(run.config)
+        if os.environ.get("WANDB_SWEEP_ID") and not config:
+            # Training the group defaults instead would look like a working
+            # sweep of identical trials rather than a broken one.
+            raise SystemExit(
+                "running under a sweep agent but wandb.config is empty: the "
+                "agent passed no hyperparameters for this trial"
+            )
+
+        run_dir = SWEEP_RUNS_DIR / str(config.get("algo", "unknown")) / run.id
+        cfg = build_cfg(config, run_dir)
+        callbacks = [
+            EvalReportCallback(
+                run_dir=run_dir,
+                every_steps=EVAL_EVERY_STEPS,
+                episodes=EVAL_EPISODES,
+                final_episodes=FINAL_EVAL_EPISODES,
+                seed=cfg.seed + 10_000,  # never the training seeds
+            ),
+            TrialTimeoutCallback(
+                max_seconds=float(
+                    os.environ.get("SWEEP_TRIAL_MAX_SECONDS", DEFAULT_MAX_SECONDS)
+                )
+            ),
+        ]
+        try:
+            run_training(cfg, extra_callbacks=callbacks)
+        finally:
+            # A trial that raised still leaves its buffer on disk, and the
+            # agent will start the next one regardless.
+            prune_trial_artifacts(run_dir)
     finally:
-        # A trial that raised still leaves its buffer on disk, and the agent
-        # will start the next one regardless.
-        prune_trial_artifacts(run_dir)
         wandb.finish()
 
 
