@@ -217,6 +217,10 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# local working notes and specs, not part of the record
+.superpowers/
+docs/superpowers/
+
 # local secrets and run outputs
 .env
 runs/

@@ -21,6 +21,10 @@ class VideoEvalCallback(BaseCallback):
         self._env: gym.Env | None = None
 
     def _on_training_start(self) -> None:
+        # A resumed run boots at num_timesteps far past every_steps, which the
+        # first _on_step would read as an overdue recording; the cadence starts
+        # from wherever training actually resumes.
+        self._next_at = self.num_timesteps + self._every
         # train.py's wandb.init(sync_tensorboard=True) already owns the
         # implicit step axis, which silently drops any step= we pass to
         # wandb.log; eval/* gets its own step metric instead.
