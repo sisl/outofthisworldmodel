@@ -5,7 +5,7 @@ import pytest
 import yaml
 
 from owm.baselines.rl.sweep_callbacks import OBJECTIVE
-from owm.baselines.rl.sweep_trial import RESERVED_KEYS, RESOURCES
+from owm.baselines.rl.sweep_trial import PIXEL_N_ENVS, RESERVED_KEYS, RESOURCES
 from owm.baselines.rl.train import ALGOS
 
 SWEEPS = Path(__file__).resolve().parent.parent / "sweeps"
@@ -68,12 +68,37 @@ def test_every_spec_pins_its_own_horizon(name):
     assert spec(name)["parameters"]["trial_timesteps"]["value"] > 0
 
 
-def test_every_ppo_batch_size_divides_the_rollout_it_is_drawn_from():
+PPO_SPEC_NAMES = [name for name in SPEC_NAMES if algo_of(name) == "ppo"]
+
+
+def effective_n_envs(name: str) -> int:
+    """The width sweep_trial will actually run this spec at.
+
+    Derived the way build_cfg derives it, from the imported constants rather
+    than a copy of the numbers: a pixel spec runs PIXEL_N_ENVS regardless of
+    its algo's vector width, because every one of its envs renders.
+    """
+    obs_param = spec(name)["parameters"].get("obs", {"value": "vector"})
+    # A spec that swept obs would run at two widths and this guard would have
+    # to check both. None does; pin the assumption rather than quietly
+    # checking one branch of it.
+    assert "value" in obs_param, f"{name} sweeps obs; its width is not static"
+    if obs_param["value"] == "vector_resnet":
+        return PIXEL_N_ENVS
+    return RESOURCES[algo_of(name)]["n_envs"]
+
+
+@pytest.mark.parametrize("name", PPO_SPEC_NAMES)
+def test_every_ppo_batch_size_divides_the_rollout_it_is_drawn_from(name):
     # PPO's last minibatch of an epoch is a short one when batch_size does not
     # divide n_steps * n_envs. SB3 only warns, so a bad pair costs a whole
-    # trial's worth of slightly-wrong updates instead of failing.
-    params = spec("ppo_vector")["parameters"]
-    n_envs = RESOURCES["ppo"]["n_envs"]
+    # trial's worth of slightly-wrong updates instead of failing. Checked per
+    # spec at that spec's own width: the pixel lane runs 4 envs, not 8, so the
+    # vector lane passing says nothing about it.
+    params = spec(name)["parameters"]
+    n_envs = effective_n_envs(name)
     for n_steps in params["n_steps"]["values"]:
         for batch_size in params["batch_size"]["values"]:
-            assert (n_steps * n_envs) % batch_size == 0, (n_steps, batch_size)
+            assert (n_steps * n_envs) % batch_size == 0, (
+                name, n_steps, batch_size, n_envs
+            )
