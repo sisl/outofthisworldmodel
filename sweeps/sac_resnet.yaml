@@ -1,0 +1,77 @@
+# wandb Bayesian sweep over SAC on the ISS docking env, state + frozen-ResNet
+# observations (rl.obs=vector_resnet): the 25-d state vector with a frozen
+# ImageNet ResNet18's 512-d embedding of the rendered frame concatenated onto
+# it, as one flat Box. The policy is still MlpPolicy, so the search space below
+# is the one sac_vector uses -- the embedding changes the input width, not the
+# algorithm, and keeping the spaces identical is what makes the two sweeps
+# comparable.
+#
+#   just sweep-init sac_resnet          # prints the sweep id
+#   just sweep-agent <id> sac_resnet    # one agent, pinned to GPU 0
+#
+# The learner runs on GPU 0 as it does for sac_vector, and only GPU 0: GPU 1 is
+# someone else's. The extractor runs on the subproc workers' CPUs whichever
+# algo this is: each worker embeds its own frames, and a CUDA context per
+# worker would cost more than it buys.
+#
+# environments pins the render224 variant of the same random-port distribution
+# sac_vector trains on: identical dynamics, rewards and port set, rendered at
+# the size the extractor reads so no frame is resampled every step.
+#
+# These specs live outside conf/ because they are wandb sweep files, not hydra
+# configs: a conf/sweep/ directory would appear in hydra's group discovery and
+# read as a config group nothing ever selects.
+program: src/owm/baselines/rl/sweep_trial.py
+command:
+  - ${env}
+  - uv
+  - run
+  - python
+  - -m
+  - owm.baselines.rl.sweep_trial
+method: bayes
+metric:
+  name: sweep/eval_mean_return
+  goal: maximize
+early_terminate:
+  type: hyperband
+  min_iter: 3   # in reports, not epochs: one per 30k steps at this horizon
+parameters:
+  algo:
+    value: sac
+  obs:
+    value: vector_resnet
+  environments:
+    value: iss_coop_goal_ports_render224
+  seed:
+    value: 0
+  trial_timesteps:
+    # Shorter than sac_vector's 500k because rendering and embedding every
+    # frame measured ~74 env-steps/s against ~362 for vector: 150k steps is
+    # ~34 min of env time, which leaves the eval tails inside the trial's
+    # wall-clock bound where 500k (~1.9 h of env time alone) would not.
+    value: 150000
+  learning_rate:
+    distribution: log_uniform_values
+    min: 1.0e-5
+    max: 1.0e-3
+  batch_size:
+    values: [256, 512, 1024]
+  gamma:
+    # dt=50 ms, so even 0.995 only looks ~10 s ahead; lower is myopic here.
+    values: [0.995, 0.999, 0.9995]
+  tau:
+    distribution: log_uniform_values
+    min: 1.0e-3
+    max: 2.0e-2
+  train_freq:
+    values: [1, 4, 8]
+  gradient_steps:
+    values: [1, 4, 8]
+  learning_starts:
+    values: [5000, 10000, 20000]
+  buffer_size:
+    # Kept identical to sac_vector's so the two sweeps search the same space,
+    # but note that at a 150k horizon neither value ever evicts a transition,
+    # so this dimension cannot separate trials here the way it can at 500k.
+    values: [300000, 1000000]
