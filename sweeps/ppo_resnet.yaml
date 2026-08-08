@@ -9,9 +9,17 @@
 #   just sweep-init ppo_resnet          # prints the sweep id
 #   just sweep-agent <id> ppo_resnet    # one agent, CPU only
 #
-# The learner runs on CPU as it does for ppo_vector. The extractor runs on the
-# subproc workers' CPUs whichever algo this is: each worker embeds its own
-# frames, and a CUDA context per worker would cost more than it buys.
+# The learner runs on CPU as it does for ppo_vector, and the extractor runs on
+# the workers' CPUs: each worker embeds its own frames, and a CUDA context per
+# worker would cost more than it buys.
+#
+# This lane is NOT GPU-free even so. Every worker renders, and the renderer
+# takes a Vulkan device worth ~1.9 GB on GPU 0 -- Vulkan does not honour the
+# CUDA_VISIBLE_DEVICES="" that the ppo_ recipe exports, so a pixel PPO trial
+# costs the same GPU memory as a pixel SAC one. sweep_trial caps a pixel trial
+# at 4 workers for that reason: 4 render contexts, ~7.6 GB measured, against
+# the ~20 GB that 8 workers plus a resident eval pool cost when it OOM'd five
+# SAC trials in a row.
 #
 # environments pins the render224 variant of the same random-port distribution
 # ppo_vector trains on: identical dynamics, rewards and port set, rendered at
@@ -45,11 +53,12 @@ parameters:
   seed:
     value: 0
   trial_timesteps:
-    # Shorter than ppo_vector's 500k because rendering and embedding every
-    # frame measured ~74 env-steps/s against ~362 for vector: 150k steps is
-    # ~34 min of env time, which leaves the eval tails inside the trial's
-    # wall-clock bound where 500k (~1.9 h of env time alone) would not.
-    value: 150000
+    # Pinned from a measurement, not from the vector spec's 500k. A pixel
+    # trial runs 4 workers rather than 8 -- each renders, and a renderer holds
+    # ~1.9 GB of GPU memory whatever rl.device says -- which measured 48.5
+    # env-steps/s. 100k is ~34 min of env time, leaving the eval tail inside a
+    # ~60 min trial; 150k at this width would be ~52 min of env time alone.
+    value: 100000
   learning_rate:
     distribution: log_uniform_values
     min: 1.0e-5
