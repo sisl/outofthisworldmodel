@@ -117,6 +117,11 @@ just train-sac rl=sac_tuned environments=iss_coop_goal_ports
 configs — any reported final baseline number should trace back to a run
 launched from one of them, not from a sweep trial or the untuned defaults.
 
+**Status.** Winners frozen for both vector sweeps (`ppo_vector` sweep
+`h4be1smz`, `sac_vector` sweep `a5kxxtk2`) as of 2026-08-08. The pixel
+sweeps (`ppo_resnet`, `sac_resnet`) are still running; their winners are not
+yet frozen.
+
 ## Telemetry
 
 Every run and every sweep trial logs `docking/*` metrics (via
