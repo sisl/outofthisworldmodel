@@ -78,6 +78,34 @@ def make_iss_env(
     return env
 
 
+def preflight_render(cfg: ISSConfig) -> None:
+    """Render one frame up front, so a GPU that cannot serve one says so here.
+
+    Rendering fails deep inside pygfx with `Request device failed (3):
+    Validation Error / Parent device is lost`, which names neither the GPU nor
+    the memory it wanted. Paying one render at launch turns that into a
+    sentence, before a trial spends its budget getting there.
+    """
+    try:
+        env = ISSEnv(cfg, render_mode="rgb_array")
+        try:
+            env.reset(seed=0)
+            env.render()
+        finally:
+            env.close()
+    except Exception as exc:
+        raise SystemExit(
+            "rl.obs=vector_resnet observes a rendered frame every step, and "
+            f"this run could not render a single one: {exc}\n"
+            "The usual cause is GPU memory pressure. The renderer takes a "
+            "Vulkan device worth roughly 1.9 GB per process, on the GPU "
+            "regardless of rl.device -- Vulkan does not honour "
+            "CUDA_VISIBLE_DEVICES -- and one process per env. Check nvidia-smi "
+            "for other tenants, and note that a pixel trial's own workers are "
+            "counted there too."
+        ) from exc
+
+
 def make_vec_env(
     env_conf: DictConfig | dict,
     n_envs: int,

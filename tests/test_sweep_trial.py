@@ -332,3 +332,22 @@ def test_environments_is_reserved_rather_than_an_sb3_hyperparameter():
     # Not routable: it names a group to compose, so OmegaConf.update would
     # replace the whole environments node with its own name.
     assert sweep_trial.ENVIRONMENTS_KEY not in sweep_trial.ROUTES
+
+
+@pytest.mark.parametrize("algo", ["ppo", "sac"])
+def test_pixel_trials_run_narrower_than_vector_ones(tmp_path: Path, algo: str):
+    trial = {**PPO_TRIAL, "algo": algo} if algo == "ppo" else {
+        "algo": "sac", "seed": 3, "trial_timesteps": 500_000, "learning_rate": 1e-4,
+    }
+    vector = build_cfg(trial, tmp_path / f"{algo}_v")
+    pixel = build_cfg({**trial, "obs": "vector_resnet"}, tmp_path / f"{algo}_p")
+
+    # Every pixel env renders, and a renderer holds ~1.9 GB of GPU memory per
+    # process whatever rl.device says, so the width is capped for both lanes.
+    assert pixel.rl.n_envs == sweep_trial.PIXEL_N_ENVS == 4
+    # The vector lanes keep the widths they have always had.
+    assert vector.rl.n_envs == sweep_trial.RESOURCES[algo]["n_envs"]
+
+
+def test_vector_trial_widths_are_untouched(tmp_path: Path):
+    assert build_cfg(PPO_TRIAL, tmp_path / "run").rl.n_envs == 8

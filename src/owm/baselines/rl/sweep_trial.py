@@ -63,6 +63,13 @@ RESOURCES = {
     "ppo": {"n_envs": 8, "vec": "subproc", "device": "cpu"},
     "sac": {"n_envs": 4, "vec": "subproc", "device": "cuda:0"},
 }
+# Every vector_resnet env renders, and the renderer takes a Vulkan device on
+# the GPU worth roughly 1.9 GB per process -- on GPU 0 whatever rl.device says,
+# because Vulkan does not honour CUDA_VISIBLE_DEVICES, so the CPU-learner PPO
+# lane is no cheaper than the SAC one. Eight workers plus a five-wide eval pool
+# put ~20 GB of one shared GPU behind a single trial, which is what OOM'd five
+# SAC trials in a row when another tenant arrived.
+PIXEL_N_ENVS = 4
 
 
 def build_cfg(config: Mapping[str, Any], run_dir: Path) -> DictConfig:
@@ -136,7 +143,9 @@ def build_cfg(config: Mapping[str, Any], run_dir: Path) -> DictConfig:
     OmegaConf.set_struct(cfg, True)
 
     cfg.run_dir = str(run_dir)
-    cfg.rl.n_envs = RESOURCES[algo]["n_envs"]
+    cfg.rl.n_envs = (
+        PIXEL_N_ENVS if str(cfg.rl.obs) == "vector_resnet" else RESOURCES[algo]["n_envs"]
+    )
     cfg.rl.vec = RESOURCES[algo]["vec"]
     cfg.rl.device = RESOURCES[algo]["device"]
     # SB3's get_device falls back to CPU without failing, so an agent launched

@@ -110,7 +110,13 @@ class EvalReportCallback(BaseCallback):
                 self._env = None
 
     def _report(self, episodes: int, final: bool) -> None:
-        mean_return, success_rate = self._evaluate(episodes)
+        try:
+            mean_return, success_rate = self._evaluate(episodes)
+        finally:
+            # In a finally so a failed eval does not strand the pool either:
+            # under vector_resnet those are GPU contexts, and the trial has
+            # hours left to run without them.
+            self._release_env()
         payload = {
             OBJECTIVE: mean_return,
             "sweep/eval_success": success_rate,
@@ -168,6 +174,20 @@ class EvalReportCallback(BaseCallback):
             if self._max_episode_steps is not None and steps >= self._max_episode_steps:
                 break
         return ep_return.tolist(), success.tolist()
+
+    def _release_env(self) -> None:
+        """Drop the eval pool between reports, for the modes it costs to keep.
+
+        A vector_resnet eval env renders, so each of its workers holds a
+        Vulkan device worth ~1.9 GB for as long as the process lives -- five of
+        them, for a whole trial, to run five episodes every cadence. Rebuilding
+        costs ~15 s a report, which is the cheaper side of that trade on a
+        shared GPU. A vector pool costs nothing to hold, so it is held, exactly
+        as it always has been.
+        """
+        if self._obs_mode == "vector_resnet" and self._env is not None:
+            self._env.close()
+            self._env = None
 
     def _eval_env(self) -> VecEnv:
         if self._env is None:

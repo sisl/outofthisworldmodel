@@ -41,7 +41,7 @@ from owm.baselines.rl.run_state import (
     vecnormalize_for,
 )
 from owm.baselines.rl.video import VideoEvalCallback
-from owm.envs.factory import iss_config, make_vec_env
+from owm.envs.factory import iss_config, make_vec_env, preflight_render
 
 load_dotenv()
 
@@ -219,6 +219,9 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
 
     resnet = None
     if obs_mode == "vector_resnet":
+        # One frame before any worker is spawned: a GPU that cannot serve a
+        # render should say so here, not from inside a worker an hour in.
+        preflight_render(iss_cfg)
         # Imported here, not at the top: owm.envs.resnet_obs pulls in
         # torchvision, and a vector run has no use for it. See the note in
         # owm/envs/factory.py.

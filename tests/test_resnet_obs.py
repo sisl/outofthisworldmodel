@@ -1,7 +1,11 @@
+from pathlib import Path
+
 import gymnasium as gym
 import numpy as np
 import pytest
 from gymnasium.spaces import Box
+
+from owm.baselines.rl.sweep_callbacks import EvalReportCallback
 
 from owm.envs.factory import make_iss_env
 from owm.envs.resnet_obs import (
@@ -147,3 +151,25 @@ def test_wrapper_refuses_an_observation_space_it_cannot_append_to():
     env.observation_space = Box(-np.inf, np.inf, (5, 5), dtype=np.float32)
     with pytest.raises(ValueError, match="flat Box observation"):
         ResnetObservationWrapper(env, StubExtractor())
+
+
+def test_eval_pool_is_released_between_reports_only_for_pixel_modes():
+    """A vector pool is free to hold; a pixel one is 5 GPU contexts."""
+
+    class FakeVecEnv:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    for obs_mode, should_close in [("vector_resnet", True), ("vector", False)]:
+        callback = EvalReportCallback(
+            run_dir=Path("unused"), every_steps=10, episodes=5, final_episodes=5,
+            seed=0, obs_mode=obs_mode,
+        )
+        env = FakeVecEnv()
+        callback._env = env
+        callback._release_env()
+        assert env.closed is should_close
+        assert (callback._env is None) is should_close
