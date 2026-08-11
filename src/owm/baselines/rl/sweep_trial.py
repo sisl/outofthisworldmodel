@@ -39,18 +39,23 @@ EVAL_EPISODES = 5
 FINAL_EVAL_EPISODES = 20
 DEFAULT_MAX_SECONDS = 7200.0
 
-# Every trial's val rounds fly one known-seed episode. A fixed constant
-# rather than the trial's own (possibly swept) seed, so every trial in every
-# sweep flies the same episode and the diagnostics read side by side.
+# Every trial's val rounds fly known-seed episodes, seeded SWEEP_VAL_SEED,
+# SWEEP_VAL_SEED+1, ... A fixed base rather than the trial's own (possibly
+# swept) seed, so every trial in every sweep flies the same episodes and the
+# diagnostics read side by side.
 #
 # The rounds are plot-only by default -- 3D trajectory, reward and control
-# traces on the objective-report cadence, costing one env rollout each. Video
-# is opt-in via SWEEP_VAL_VIDEO=1, because a rendered round draws six views
-# per frame and costs minutes where a plot round costs seconds; opted in, one
-# episode is rendered at the trial's mid-point and end, the two like-for-like
-# points to watch across trials.
+# traces on the objective-report cadence -- so they cost env rollouts and
+# matplotlib, cheap enough to fly a handful of episodes per round; the count
+# is an env knob like the trial timeout. Video is opt-in via
+# SWEEP_VAL_VIDEO=1, because a rendered round draws six views per frame and
+# costs minutes where a plot round costs seconds; opted in, ONE episode (the
+# plot rounds' first, seed SWEEP_VAL_SEED) is rendered at the trial's
+# mid-point and end, the two like-for-like points to watch across trials --
+# one, because video cost scales per episode rendered.
 SWEEP_VAL_SEED = 20_000
-SWEEP_VAL_EPISODES = 1
+DEFAULT_SWEEP_VAL_EPISODES = 5
+SWEEP_VAL_EPISODES_VAR = "SWEEP_VAL_EPISODES"
 SWEEP_VAL_VIDEO_VAR = "SWEEP_VAL_VIDEO"
 
 # How to add a hyperparameter to a sweep: add it to the spec's `parameters`
@@ -282,6 +287,9 @@ def main() -> None:
             video = os.environ.get(SWEEP_VAL_VIDEO_VAR, "").lower() in (
                 "1", "true", "yes",
             )
+            episodes = int(
+                os.environ.get(SWEEP_VAL_EPISODES_VAR, DEFAULT_SWEEP_VAL_EPISODES)
+            )
             # Plot-only trajectory diagnostics on the objective-report
             # cadence. The final plot round is owed by whichever callback
             # runs last: the video one when video is on, this one otherwise.
@@ -290,7 +298,7 @@ def main() -> None:
                     run_dir=run_dir,
                     env_name=env_name,
                     seed=SWEEP_VAL_SEED,
-                    episodes=SWEEP_VAL_EPISODES,
+                    episodes=episodes,
                     video_episodes=0,
                     every_steps=eval_cadence(total),
                     final=not video,
@@ -302,8 +310,8 @@ def main() -> None:
                         run_dir=run_dir,
                         env_name=env_name,
                         seed=SWEEP_VAL_SEED,
-                        episodes=SWEEP_VAL_EPISODES,
-                        video_episodes=SWEEP_VAL_EPISODES,
+                        episodes=1,
+                        video_episodes=1,
                         at_steps=(total // 2,),
                         final=True,
                     )

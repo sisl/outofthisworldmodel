@@ -71,14 +71,15 @@ that source, not paraphrased from memory):
 - `hub.upload=false` and `val.enabled=false` — trials never publish to the
   HF Hub, and training's own val cadence is off. Instead each vector trial
   schedules plot-only val rounds of its own on the objective-report cadence
-  (plus one at the end): one episode at a seed every trial shares
-  (`SWEEP_VAL_SEED`), logging the 3D trajectory/attitude and
-  reward/force/torque plots under `val/*` — a rollout and some matplotlib,
-  seconds per round. Video is opt-in: launch the agent with
-  `SWEEP_VAL_VIDEO=1` to also render that episode to composite and FPV video
-  at the trial's mid-point and end, the two like-for-like points to watch
-  across trials — rendering draws six views per frame and costs minutes per
-  round, which is why it is not the default.
+  (plus one at the end): `SWEEP_VAL_EPISODES` episodes (env var, default 5)
+  at seeds every trial shares (`SWEEP_VAL_SEED`, `+1`, ...), logging the 3D
+  trajectory/attitude and reward/force/torque plots under `val/*` — rollouts
+  and some matplotlib, cheap enough for a handful of episodes per round.
+  Video is opt-in: launch the agent with `SWEEP_VAL_VIDEO=1` to also render
+  the first of those episodes to composite and FPV video at the trial's
+  mid-point and end, the two like-for-like points to watch across trials —
+  rendering draws six views per frame and costs minutes per round, which is
+  why it is not the default and stays at one episode.
 - Everything in a trial's `wandb.config` besides `algo` (selects the `rl`
   group), `trial_timesteps` (→ `rl.total_timesteps`), `obs` (→ `rl.obs`),
   and `seed` routes straight to `rl.hyperparams.<key>` — so a spec tunes a
