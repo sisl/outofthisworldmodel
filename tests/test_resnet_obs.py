@@ -7,7 +7,7 @@ from gymnasium.spaces import Box
 
 from owm.baselines.rl.sweep_callbacks import EvalReportCallback
 
-from owm.envs.factory import make_iss_env
+from owm.envs.factory import make_env
 from owm.envs.resnet_obs import (
     FrozenResnetExtractor,
     ResnetObservationWrapper,
@@ -87,11 +87,11 @@ def test_wrapper_refuses_an_env_that_cannot_render():
         ResnetObservationWrapper(FakeRenderEnv(render_mode=None), StubExtractor())
 
 
-def test_make_iss_env_rejects_an_unknown_obs_mode_and_a_missing_extractor():
+def test_make_env_rejects_an_unknown_obs_mode_and_a_missing_extractor():
     with pytest.raises(ValueError, match="unknown obs_mode"):
-        make_iss_env(None, seed=0, obs_mode="pixels")
+        make_env(None, seed=0, obs_mode="pixels")
     with pytest.raises(ValueError, match="needs an extractor"):
-        make_iss_env(None, seed=0, obs_mode="vector_resnet")
+        make_env(None, seed=0, obs_mode="vector_resnet")
 
 
 @pytest.mark.parametrize(

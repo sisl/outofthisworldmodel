@@ -5,7 +5,7 @@ from conftest import CONF_DIR
 from hydra import compose, initialize_config_dir
 
 from owm.baselines.rl.train import ALGOS
-from owm.envs.factory import iss_config
+from owm.envs.factory import env_config
 
 # The published 500k dataset's train-split port set, in the order
 # owm-envs configs/generation_500k.yaml's splits.train.policy.dock.ports
@@ -49,7 +49,7 @@ def test_tuned_config_carries_a_winners_hyperparams(rl):
 def test_ports_environment_composes_with_the_train_port_set():
     with initialize_config_dir(config_dir=CONF_DIR, version_base="1.3"):
         cfg = compose(config_name="config", overrides=["environments=iss_coop_goal_ports"])
-    resolved = iss_config(cfg.environments)
+    resolved = env_config(cfg.environments)
     assert tuple(port.name for port in resolved.dock.ports) == TRAIN_PORT_NAMES
 
 
@@ -58,5 +58,34 @@ def test_heldout_ports_environment_composes_with_the_val_only_port_set():
         cfg = compose(
             config_name="config", overrides=["environments=iss_coop_goal_ports_heldout"]
         )
-    resolved = iss_config(cfg.environments)
+    resolved = env_config(cfg.environments)
     assert tuple(port.name for port in resolved.dock.ports) == HELDOUT_PORT_NAMES
+
+
+def test_numerical_ports_environment_composes_with_the_train_port_set():
+    with initialize_config_dir(config_dir=CONF_DIR, version_base="1.3"):
+        cfg = compose(config_name="config", overrides=["environments=iss_numerical_ports"])
+    resolved = env_config(cfg.environments)
+    assert tuple(port.name for port in resolved.dock.ports) == TRAIN_PORT_NAMES
+    # The start shell this env actually disperses over lives under `orbit`;
+    # physics.start_radius_range_m is never read here, so asserting through
+    # start_shell() is the only way to catch the shell being written to the
+    # field that does nothing.
+    assert resolved.start_shell() == (100.0, 500.0)
+    assert resolved.observation.mode == "relative"
+    assert resolved.observation.goal_error is True
+    # The force model is the point of this env; a config that silently lost it
+    # would train two-body dynamics under a numerical env's name.
+    assert resolved.perturbations.zonal_max_degree == 4
+    assert resolved.perturbations.third_body_sun
+    assert resolved.perturbations.third_body_moon
+    assert resolved.perturbations.drag
+    # Reward semantics are held identical to the iss port config: this
+    # migration changes the dynamics and the observation, never the reward.
+    with initialize_config_dir(config_dir=CONF_DIR, version_base="1.3"):
+        iss_cfg = compose(config_name="config", overrides=["environments=iss_coop_goal_ports"])
+    iss_resolved = env_config(iss_cfg.environments)
+    assert resolved.reward_weights == iss_resolved.reward_weights
+    assert resolved.reward_goal_position == iss_resolved.reward_goal_position
+    assert resolved.dock.max_distance_m == iss_resolved.dock.max_distance_m
+    assert resolved.dock.max_velocity_m_s == iss_resolved.dock.max_velocity_m_s

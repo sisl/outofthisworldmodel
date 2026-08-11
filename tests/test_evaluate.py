@@ -56,13 +56,13 @@ class _EnvSpy:
 @pytest.mark.parametrize("fail", [False, True])
 def test_eval_closes_its_env(trained_run, tmp_path: Path, monkeypatch, fail: bool):
     spied = []
-    real_make = evaluate.make_iss_env
+    real_make = evaluate.make_env
 
     def spy(cfg, seed, render=False):
         spied.append(_EnvSpy(real_make(cfg, seed=seed, render=render), fail))
         return spied[-1]
 
-    monkeypatch.setattr(evaluate, "make_iss_env", spy)
+    monkeypatch.setattr(evaluate, "make_env", spy)
     cfg = eval_cfg(tmp_path, str(trained_run / FINAL_MODEL))
 
     # A rendering eval holds a GL context, so the env has to be released on

@@ -12,7 +12,7 @@ import pytest
 from huggingface_hub import hf_hub_download
 from owm_envs.envs.iss.config import ISSConfig
 
-from owm.envs.factory import iss_config
+from owm.envs.factory import env_config
 from conftest import env_conf
 
 DATASET_REPO = os.environ.get(
@@ -26,5 +26,5 @@ def test_env_config_matches_dataset():
         repo_id=DATASET_REPO, filename="env_config.yaml", repo_type="dataset"
     )
     published = ISSConfig.from_yaml(path)
-    ours = iss_config(env_conf())
+    ours = env_config(env_conf())
     assert ours == published
