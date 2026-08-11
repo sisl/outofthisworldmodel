@@ -11,6 +11,7 @@ import wandb
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import VecEnv
 
+from owm.baselines.rl.metrics import GOAL_ERROR_KEYS
 from owm.envs.factory import DEFAULT_ENV_NAME, env_conf_dict, env_spec, make_vec_env
 
 # The sweep's objective. Bayes reads its last value, hyperband reads the
@@ -80,6 +81,10 @@ class EvalReportCallback(BaseCallback):
         self._resnet = resnet
         self._next_at = every_steps
         self._env: VecEnv | None = None
+        # Warned once, like DockingMetricsCallback: an env with no
+        # goal_error_true still reports the objective, just without the
+        # diagnostics that key feeds.
+        self._goal_error_missing_warned = False
 
     def _on_training_start(self) -> None:
         # A resumed run boots at num_timesteps far past every_steps, which the
@@ -115,7 +120,7 @@ class EvalReportCallback(BaseCallback):
 
     def _report(self, episodes: int, final: bool) -> None:
         try:
-            mean_return, success_rate = self._evaluate(episodes)
+            mean_return, success_rate, final_errors, min_errors = self._evaluate(episodes)
         finally:
             # In a finally so a failed eval does not strand the pool either:
             # under vector_resnet those are GPU contexts, and the trial has
@@ -126,6 +131,19 @@ class EvalReportCallback(BaseCallback):
             "sweep/eval_success": success_rate,
             STEP_METRIC: self.num_timesteps,
         }
+        # Additive diagnostics on top of the objective: how close the policy's
+        # deterministic eval actually got to the goal, not just whether it
+        # counted as a dock. None when the env has no goal_error_true.
+        if final_errors is not None:
+            payload["sweep/eval_final_pos_m"] = final_errors["pos_m"]
+            payload["sweep/eval_final_vel_mps"] = final_errors["vel_mps"]
+            payload["sweep/eval_final_att_rad"] = final_errors["att_rad"]
+            payload["sweep/eval_final_rate_radps"] = final_errors["rate_radps"]
+        if min_errors is not None:
+            payload["sweep/eval_min_pos_m"] = min_errors["pos_m"]
+            payload["sweep/eval_min_vel_mps"] = min_errors["vel_mps"]
+            payload["sweep/eval_min_att_rad"] = min_errors["att_rad"]
+            payload["sweep/eval_min_rate_radps"] = min_errors["rate_radps"]
         if final:
             # Same number under a name no intermediate report ever writes, so
             # the finished-trial value can be read back without guessing which
@@ -134,7 +152,9 @@ class EvalReportCallback(BaseCallback):
             payload["sweep/final_success"] = success_rate
         wandb.log(payload)
 
-    def _evaluate(self, episodes: int) -> tuple[float, float]:
+    def _evaluate(
+        self, episodes: int
+    ) -> tuple[float, float, dict[str, float] | None, dict[str, float] | None]:
         venv = self._eval_env()
         # The policy sees normalized observations in training, so evaluating it
         # on raw ones would measure a transform mismatch, not the policy.
@@ -142,17 +162,36 @@ class EvalReportCallback(BaseCallback):
         vecnorm = self.model.get_vec_normalize_env()
         returns: list[float] = []
         successes: list[bool] = []
+        finals: list[dict[str, float]] = []
+        mins: list[dict[str, float]] = []
         # Episodes run a vec-width at a time. One at a time left the training
         # workers idle and made a report cost more than the training it was
         # reporting on.
         for first in range(0, episodes, venv.num_envs):
             batch = min(venv.num_envs, episodes - first)
-            batch_returns, batch_successes = self._rollout(venv, vecnorm, first)
+            batch_returns, batch_successes, batch_finals, batch_mins = self._rollout(
+                venv, vecnorm, first
+            )
             returns.extend(batch_returns[:batch])
             successes.extend(batch_successes[:batch])
-        return float(np.mean(returns)), sum(successes) / episodes
+            finals.extend(error for error in batch_finals[:batch] if error is not None)
+            mins.extend(error for error in batch_mins[:batch] if error is not None)
+        mean_return = float(np.mean(returns))
+        success_rate = sum(successes) / episodes
+        return mean_return, success_rate, self._aggregate(finals), self._aggregate(mins)
 
-    def _rollout(self, venv, vecnorm, first_episode: int) -> tuple[list[float], list[bool]]:
+    @staticmethod
+    def _aggregate(records: list[dict[str, float]]) -> dict[str, float] | None:
+        # None rather than a dict of NaNs: an env with no goal_error_true has
+        # no records at all, and that should read as "not available", not as
+        # a numeric zero/NaN a dashboard would plot.
+        if not records:
+            return None
+        return {key: float(np.mean([record[key] for record in records])) for key in GOAL_ERROR_KEYS}
+
+    def _rollout(
+        self, venv, vecnorm, first_episode: int
+    ) -> tuple[list[float], list[bool], list[dict[str, float] | None], list[dict[str, float] | None]]:
         """Run one episode per env, seeded as episodes first_episode + i."""
         # VecEnv.seed hands env i seed+i at the next reset, which is exactly the
         # numbering an episode-at-a-time loop produced, so a trial's score does
@@ -162,6 +201,8 @@ class EvalReportCallback(BaseCallback):
         width = venv.num_envs
         ep_return = np.zeros(width, dtype=np.float64)
         success = np.zeros(width, dtype=bool)
+        mins = [self._fresh_minima() for _ in range(width)]
+        finals: list[dict[str, float] | None] = [None] * width
         # A vec env auto-resets a finished env, so anything it reports after
         # that belongs to an episode nobody asked for.
         live = np.ones(width, dtype=bool)
@@ -172,12 +213,39 @@ class EvalReportCallback(BaseCallback):
             obs, rewards, dones, infos = venv.step(actions)
             steps += 1
             ep_return += rewards * live
+            for index in np.flatnonzero(live):
+                error = self._goal_error(infos[index])
+                if error is not None:
+                    for key in GOAL_ERROR_KEYS:
+                        if error[key] < mins[index][key]:
+                            mins[index][key] = error[key]
             for index in np.flatnonzero(live & dones):
                 success[index] = bool(infos[index].get("success"))
+                finals[index] = self._goal_error(infos[index])
             live &= ~dones
             if self._max_episode_steps is not None and steps >= self._max_episode_steps:
                 break
-        return ep_return.tolist(), success.tolist()
+        # A slot's minimum only means something once we know that slot ever
+        # had a goal_error_true to track; otherwise it is still the untouched
+        # all-inf sentinel.
+        episode_mins = [mins[i] if finals[i] is not None else None for i in range(width)]
+        return ep_return.tolist(), success.tolist(), finals, episode_mins
+
+    def _goal_error(self, info: dict) -> dict[str, float] | None:
+        if "goal_error_true" not in info:
+            if not self._goal_error_missing_warned:
+                print(
+                    "[sweep] WARNING infos have no goal_error_true (not an "
+                    "owm-envs docking env?); skipping eval goal-error "
+                    "diagnostics"
+                )
+                self._goal_error_missing_warned = True
+            return None
+        return info["goal_error_true"]
+
+    @staticmethod
+    def _fresh_minima() -> dict[str, float]:
+        return {key: float("inf") for key in GOAL_ERROR_KEYS}
 
     def _release_env(self) -> None:
         """Drop the eval pool between reports, for the modes it costs to keep.
