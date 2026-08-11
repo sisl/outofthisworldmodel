@@ -1,7 +1,10 @@
-# wandb Bayesian sweep over SAC on the ISS docking env, vector observations.
+# wandb Bayesian sweep over SAC on the iss-numerical docking env
+# (sweep_trial's default environments=iss_numerical_ports), vector
+# observations.
 #
 #   just sweep-init sac_vector          # prints the sweep id
-#   just sweep-agent <id> sac_vector    # one agent, pinned to GPU 0
+#   just sweep-agent <id> sac_vector    # one agent, on GPU 2
+#   just sweep-agent <id> sac_vector 3  # a second agent, on GPU 3
 #
 # One spec per (algo, obs mode) pair; the pixel specs land with rl.obs.
 #
