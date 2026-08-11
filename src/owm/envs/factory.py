@@ -66,19 +66,32 @@ def env_spec(env_name: str):
 def env_name_of(cfg: BaseTaskConfig) -> str:
     """Which env of the suite `cfg` configures, by its config class.
 
-    The reverse of `env_spec(...).config_cls`, and unambiguous because the
-    registry gives every env its own config class. Callers that hold only a
+    The reverse of `env_spec(...).config_cls`. Callers that hold only a
     resolved config -- the video and eval envs, the render preflight -- read
     the env off it here rather than being handed the name separately, so a
     config and the env it is flown on cannot drift apart in transit.
+
+    Exact type, not isinstance: every env's config class extends
+    `BaseTaskConfig` and `HCWConfig`-style subclassing is how the suite grows,
+    so isinstance would match a base class against a derived config and pick
+    whichever env the registry happened to list first. Two envs sharing one
+    config class would make the reverse direction genuinely ambiguous, which is
+    an upstream registry change rather than anything a caller can fix -- so it
+    is raised here rather than resolved by iteration order.
     """
-    for spec in ENV_REGISTRY.values():
-        if type(cfg) is spec.config_cls:
-            return spec.name
-    raise ValueError(
-        f"{type(cfg).__name__} is not the config class of any env owm-envs "
-        f"registers ({sorted(ENV_REGISTRY)})"
-    )
+    matches = [spec.name for spec in ENV_REGISTRY.values() if type(cfg) is spec.config_cls]
+    if len(matches) > 1:
+        raise ValueError(
+            f"{type(cfg).__name__} is the config class of more than one env "
+            f"owm-envs registers ({matches}), so which env a config of that "
+            "class describes cannot be recovered from the config alone"
+        )
+    if not matches:
+        raise ValueError(
+            f"{type(cfg).__name__} is not the config class of any env owm-envs "
+            f"registers ({sorted(ENV_REGISTRY)})"
+        )
+    return matches[0]
 
 
 def env_class(env_name: str) -> type[gym.Env]:

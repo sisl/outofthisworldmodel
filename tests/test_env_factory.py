@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import numpy as np
 import pytest
 from conftest import CONF_DIR, env_conf
@@ -233,3 +235,33 @@ def test_make_vec_env_dummy_on_the_numerical_env():
     obs = venv.reset()
     assert obs.shape == (2, NUMERICAL_OBS_DIM)
     venv.close()
+
+
+def test_env_name_of_refuses_an_ambiguous_config_class(monkeypatch):
+    """Two envs sharing a config class must raise, not pick by iteration order.
+
+    env_name_of recovers the env from the config alone, which only works while
+    the registry keeps one config class per env. That is an upstream invariant
+    this repo cannot enforce, so the failure mode worth pinning is what happens
+    when it breaks: a named error rather than a silent route to whichever env
+    the registry listed first.
+    """
+    from owm_envs.envs import ENV_REGISTRY
+
+    spec = ENV_REGISTRY["iss"]
+    doubled = {**ENV_REGISTRY, "iss-twin": replace(spec, name="iss-twin")}
+    monkeypatch.setattr(factory, "ENV_REGISTRY", doubled)
+
+    with pytest.raises(ValueError, match="more than one env"):
+        factory.env_name_of(env_config(env_conf()))
+
+
+def test_env_name_of_rejects_a_config_class_the_registry_does_not_know():
+    class NotAnEnvConfig(ISSConfig):
+        pass
+
+    # A subclass, deliberately: it is not the registered class, and matching it
+    # by isinstance would route it to `iss` while carrying fields ISSConfig
+    # cannot round-trip.
+    with pytest.raises(ValueError, match="not the config class of any env"):
+        factory.env_name_of(NotAnEnvConfig())

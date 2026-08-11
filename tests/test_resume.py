@@ -3,6 +3,9 @@ from pathlib import Path
 import pytest
 from conftest import CONF_DIR, SMOKE, smoke_cfg
 from hydra import compose, initialize_config_dir
+from owm_envs.envs.iss.config import ISSConfig
+from owm_envs.envs.iss_numerical.config import NumericalConfig
+from pydantic import ValidationError
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.save_util import load_from_pkl
 from stable_baselines3.common.vec_env import VecNormalize
@@ -323,3 +326,37 @@ def test_fresh_run_refuses_existing_run_dir(tmp_path: Path, monkeypatch):
     with pytest.raises(SystemExit, match="already contains a run"):
         run_training(smoke_cfg(tmp_path, "ppo"))  # same run dir, resume not set
     assert load_wandb_id(run_dir) == first_id  # the existing run is untouched
+
+
+# environments.max_steps shortens the episode so the run actually finishes
+# some; nothing here depends on the horizon otherwise.
+NUMERICAL = ["environments=iss_numerical_ports", "environments.max_steps=40"]
+
+
+def test_resume_reads_the_env_record_with_the_right_config_class(
+    tmp_path: Path, monkeypatch
+):
+    """A numerical run's resume must not parse its record as an ISSConfig.
+
+    env_config.yaml holds the task config alone -- the shape a published
+    dataset ships -- so which class validates it on resume comes from the run's
+    saved config.yaml beside it. Getting that wrong is not a silent drift:
+    ISSConfig is extra="forbid" and the record carries orbit and perturbations
+    blocks it has never heard of, which is what the middle assertion pins. So
+    the second leg completing at all is the evidence that the routing happened.
+    """
+    monkeypatch.setenv("WANDB_MODE", "offline")
+    run_dir = run_training(smoke_cfg(tmp_path, "ppo", extra=NUMERICAL))
+
+    record = run_dir / "env_config.yaml"
+    assert NumericalConfig.from_yaml(record).observation.mode == "relative"
+    with pytest.raises(ValidationError):
+        ISSConfig.from_yaml(record)
+
+    # Deliberately a bare resume, carrying no environments override: the env
+    # has to come off the run dir, not off what this call happens to compose.
+    run_training(smoke_cfg(tmp_path, "ppo", extra=["resume=true", "extend_timesteps=600"]))
+
+    model = PPO.load(run_dir / FINAL_MODEL, device="cpu")
+    assert model.num_timesteps >= 600
+    assert model.observation_space.shape == (27,)

@@ -87,5 +87,18 @@ def test_numerical_ports_environment_composes_with_the_train_port_set():
     iss_resolved = env_config(iss_cfg.environments)
     assert resolved.reward_weights == iss_resolved.reward_weights
     assert resolved.reward_goal_position == iss_resolved.reward_goal_position
-    assert resolved.dock.max_distance_m == iss_resolved.dock.max_distance_m
-    assert resolved.dock.max_velocity_m_s == iss_resolved.dock.max_velocity_m_s
+    # The whole dock block, not a couple of gates: `dock` carries the pose, the
+    # enable flag, all four gates and the port table, and every one of them
+    # feeds either the reward or what counts as a successful episode. Comparing
+    # the model itself means a later edit to any of those fields has to be a
+    # deliberate divergence rather than something this test waves through.
+    assert resolved.dock == iss_resolved.dock
+    # Same for the rest of the task envelope the two configs are meant to share.
+    assert resolved.sensor_noise == iss_resolved.sensor_noise
+    assert (resolved.dt, resolved.max_steps, resolved.max_range_m) == (
+        iss_resolved.dt,
+        iss_resolved.max_steps,
+        iss_resolved.max_range_m,
+    )
+    assert resolved.physics.mass == iss_resolved.physics.mass
+    assert resolved.control == iss_resolved.control
