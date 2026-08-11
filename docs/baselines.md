@@ -98,6 +98,25 @@ new committed config, same schema as `conf/rl/ppo.yaml` / `conf/rl/sac.yaml`
 - `conf/rl/ppo_tuned.yaml`
 - `conf/rl/sac_tuned.yaml`
 
+**Finding the winner.** The winning trial is whichever run in the sweep has
+the highest `sweep/final_mean_return` (the objective's value from its final,
+20-episode eval, not an intermediate periodic report).
+
+- *wandb UI:* open the sweep page, go to its Runs tab, sort by the
+  `sweep/final_mean_return` column descending, and open the top run's Config
+  tab for the hyperparameters to copy into `hyperparams:`.
+- *Programmatic:* `wandb.Api()` reads the same data without the UI:
+
+  ```python
+  import wandb
+
+  api = wandb.Api()
+  sweep = api.sweep("<entity>/<project>/<sweep_id>")
+  winner = max(sweep.runs, key=lambda r: r.summary["sweep/final_mean_return"])
+  print(winner.id, winner.summary["sweep/final_mean_return"])
+  print(dict(winner.config))
+  ```
+
 Each file's header comment records its provenance: the sweep id and its
 wandb URL, the winning trial's run id and wandb URL, the objective value
 (`sweep/eval_mean_return`) it achieved, and the date the sweep concluded.
