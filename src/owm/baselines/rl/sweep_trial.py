@@ -39,12 +39,19 @@ EVAL_EPISODES = 5
 FINAL_EVAL_EPISODES = 20
 DEFAULT_MAX_SECONDS = 7200.0
 
-# One known-seed val episode, rendered to video, at the trial's mid-point and
-# again when it ends. A fixed constant rather than the trial's own (possibly
-# swept) seed, so every trial in every sweep flies the same episode and the
-# videos read side by side.
+# Every trial's val rounds fly one known-seed episode. A fixed constant
+# rather than the trial's own (possibly swept) seed, so every trial in every
+# sweep flies the same episode and the diagnostics read side by side.
+#
+# The rounds are plot-only by default -- 3D trajectory, reward and control
+# traces on the objective-report cadence, costing one env rollout each. Video
+# is opt-in via SWEEP_VAL_VIDEO=1, because a rendered round draws six views
+# per frame and costs minutes where a plot round costs seconds; opted in, one
+# episode is rendered at the trial's mid-point and end, the two like-for-like
+# points to watch across trials.
 SWEEP_VAL_SEED = 20_000
 SWEEP_VAL_EPISODES = 1
+SWEEP_VAL_VIDEO_VAR = "SWEEP_VAL_VIDEO"
 
 # How to add a hyperparameter to a sweep: add it to the spec's `parameters`
 # (sweeps/<name>.yaml) with a wandb distribution — see
@@ -266,23 +273,41 @@ def main() -> None:
             ),
         ]
         if obs_mode == "vector":
-            # Mid-point and end-of-trial val rounds, video included. Vector
-            # trials only: the val env observes vectors, which a
-            # vector_resnet policy cannot read (train.py refuses the same
-            # combination for the training cadence).
+            # Val rounds for the trial. Vector trials only: the val env
+            # observes vectors, which a vector_resnet policy cannot read
+            # (train.py refuses the same combination for the training
+            # cadence).
+            env_name = str(cfg.environments.get(ENV_NAME_KEY, DEFAULT_ENV_NAME))
+            total = int(cfg.rl.total_timesteps)
+            video = os.environ.get(SWEEP_VAL_VIDEO_VAR, "").lower() in (
+                "1", "true", "yes",
+            )
+            # Plot-only trajectory diagnostics on the objective-report
+            # cadence. The final plot round is owed by whichever callback
+            # runs last: the video one when video is on, this one otherwise.
             callbacks.append(
                 ValEpisodeCallback(
                     run_dir=run_dir,
-                    env_name=str(
-                        cfg.environments.get(ENV_NAME_KEY, DEFAULT_ENV_NAME)
-                    ),
+                    env_name=env_name,
                     seed=SWEEP_VAL_SEED,
                     episodes=SWEEP_VAL_EPISODES,
-                    video_episodes=SWEEP_VAL_EPISODES,
-                    at_steps=(int(cfg.rl.total_timesteps) // 2,),
-                    final=True,
+                    video_episodes=0,
+                    every_steps=eval_cadence(total),
+                    final=not video,
                 )
             )
+            if video:
+                callbacks.append(
+                    ValEpisodeCallback(
+                        run_dir=run_dir,
+                        env_name=env_name,
+                        seed=SWEEP_VAL_SEED,
+                        episodes=SWEEP_VAL_EPISODES,
+                        video_episodes=SWEEP_VAL_EPISODES,
+                        at_steps=(total // 2,),
+                        final=True,
+                    )
+                )
         try:
             run_training(cfg, extra_callbacks=callbacks)
         finally:
