@@ -10,7 +10,7 @@ SMOKE = [
     "rl.device=cpu",
     "rl.total_timesteps=300",
     "rl.checkpoint.save_freq=128",
-    "video.enabled=false",
+    "val.enabled=false",
     "hub.upload=false",
 ]
 

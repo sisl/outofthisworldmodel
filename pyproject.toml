@@ -17,6 +17,7 @@ dependencies = [
     "tensorboard>=2.15",
     "moviepy>=1.0",
     "imageio[ffmpeg]>=2.31",
+    "matplotlib>=3.8",
     "torchvision>=0.20",
     "click>=8.1",
 ]

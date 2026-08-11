@@ -25,6 +25,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from owm.baselines.rl.run_state import CHECKPOINT_DIR, FINAL_REPLAY_BUFFER
 from owm.baselines.rl.sweep_callbacks import EvalReportCallback, TrialTimeoutCallback
+from owm.baselines.rl.val_episodes import ValEpisodeCallback
 from owm.envs.factory import DEFAULT_ENV_NAME, ENV_NAME_KEY
 from owm.baselines.rl.train import run_training
 
@@ -37,6 +38,13 @@ EVAL_REPORTS = 5
 EVAL_EPISODES = 5
 FINAL_EVAL_EPISODES = 20
 DEFAULT_MAX_SECONDS = 7200.0
+
+# One known-seed val episode, rendered to video, at the trial's mid-point and
+# again when it ends. A fixed constant rather than the trial's own (possibly
+# swept) seed, so every trial in every sweep flies the same episode and the
+# videos read side by side.
+SWEEP_VAL_SEED = 20_000
+SWEEP_VAL_EPISODES = 1
 
 # How to add a hyperparameter to a sweep: add it to the spec's `parameters`
 # (sweeps/<name>.yaml) with a wandb distribution — see
@@ -74,17 +82,21 @@ RESERVED_KEYS = frozenset({ALGO_KEY, ENVIRONMENTS_KEY, *ROUTES})
 _MISSING = object()
 
 # Fixed per algorithm, not swept: they are a property of the machine the sweep
-# runs on, not of the policy. cuda:0 is deliberate — GPU 1 is somebody else's.
+# runs on, not of the policy. cuda:0 means "the one GPU this agent was given":
+# `just sweep-agent` narrows CUDA_VISIBLE_DEVICES to a single physical device
+# (2 or 3 -- 0 and 1 belong to other tenants), and cuda:0 is that device.
 RESOURCES = {
     "ppo": {"n_envs": 8, "vec": "subproc", "device": "cpu"},
     "sac": {"n_envs": 4, "vec": "subproc", "device": "cuda:0"},
 }
 # Every vector_resnet env renders, and the renderer takes a Vulkan device on
-# the GPU worth roughly 1.9 GB per process -- on GPU 0 whatever rl.device says,
-# because Vulkan does not honour CUDA_VISIBLE_DEVICES, so the CPU-learner PPO
-# lane is no cheaper than the SAC one. Eight workers plus a five-wide eval pool
-# put ~20 GB of one shared GPU behind a single trial, which is what OOM'd five
-# SAC trials in a row when another tenant arrived.
+# the GPU worth roughly 1.9 GB per process. Vulkan does not honour
+# CUDA_VISIBLE_DEVICES -- without PYGFX_WGPU_ADAPTER_NAME (which the justfile
+# exports to point at this machine's own GPUs) every render context lands on
+# GPU 0 whatever rl.device says -- so the CPU-learner PPO lane is no cheaper
+# than the SAC one. Eight workers plus a five-wide eval pool put ~20 GB of
+# one shared GPU behind a single trial, which is what OOM'd five SAC trials
+# in a row when another tenant arrived.
 PIXEL_N_ENVS = 4
 
 
@@ -178,10 +190,12 @@ def build_cfg(config: Mapping[str, Any], run_dir: Path) -> DictConfig:
     # A trial is disposable and never resumed, so periodic checkpoints would
     # only cost disk — SAC's carry a replay buffer of hundreds of MB each.
     cfg.rl.checkpoint.save_freq = int(cfg.rl.total_timesteps)
-    # The agent owns the run; a trial publishes nothing and renders nothing.
+    # The agent owns the run and a trial publishes nothing. Training's own
+    # val cadence is off too: the trial schedules its own two val rounds
+    # (mid-point and end) in main(), at a seed every trial shares.
     cfg.external_wandb = True
     cfg.hub.upload = False
-    cfg.video.enabled = False
+    cfg.val.enabled = False
     return cfg
 
 
@@ -251,6 +265,24 @@ def main() -> None:
                 )
             ),
         ]
+        if obs_mode == "vector":
+            # Mid-point and end-of-trial val rounds, video included. Vector
+            # trials only: the val env observes vectors, which a
+            # vector_resnet policy cannot read (train.py refuses the same
+            # combination for the training cadence).
+            callbacks.append(
+                ValEpisodeCallback(
+                    run_dir=run_dir,
+                    env_name=str(
+                        cfg.environments.get(ENV_NAME_KEY, DEFAULT_ENV_NAME)
+                    ),
+                    seed=SWEEP_VAL_SEED,
+                    episodes=SWEEP_VAL_EPISODES,
+                    video_episodes=SWEEP_VAL_EPISODES,
+                    at_steps=(int(cfg.rl.total_timesteps) // 2,),
+                    final=True,
+                )
+            )
         try:
             run_training(cfg, extra_callbacks=callbacks)
         finally:

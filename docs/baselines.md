@@ -23,16 +23,18 @@ uploaded to the HF Hub repo configured as `OWM_HF_MODEL_REPO`, under
 ## Sweep lifecycle
 
 ```bash
-just sweep-init ppo_vector             # prints the sweep id
-just sweep-agent <sweep_id> ppo_vector # one agent, CPU only
+just sweep-init ppo_vector               # prints the sweep id
+just sweep-agent <sweep_id> ppo_vector   # one agent, CPU only
 just sweep-init sac_vector
-just sweep-agent <sweep_id> sac_vector # one agent, pinned to GPU 0
+just sweep-agent <sweep_id> sac_vector   # one agent, on GPU 2
+just sweep-agent <sweep_id> sac_vector 3 # a second agent, on GPU 3
 ```
 
 `sweep-init` creates a wandb Bayesian sweep from `sweeps/<name>.yaml`.
-`sweep-agent` pins devices off the spec's `ppo_*`/`sac_*` prefix
-(`CUDA_VISIBLE_DEVICES=""` for PPO, `CUDA_VISIBLE_DEVICES="0"` for SAC — GPU 1
-is someone else's) and runs `wandb agent`, which pulls and runs one trial
+`sweep-agent` pins devices off the spec's `ppo_*`/`sac_*` prefix:
+`CUDA_VISIBLE_DEVICES=""` for PPO, and for SAC a single GPU out of 2/3, the
+RTX PRO 6000s that are this project's to use — GPUs 0/1, the H100s, belong
+to other tenants. It then runs `wandb agent`, which pulls and runs one trial
 (`owm.baselines.rl.sweep_trial`) at a time until stopped.
 
 **Objective.** Each spec's `metric.name` is `sweep/eval_mean_return`
@@ -66,8 +68,14 @@ that source, not paraphrased from memory):
   (SAC's checkpoints each carry a replay buffer of hundreds of MB).
 - `external_wandb=true` — the trial trains inside the run the wandb agent
   already opened, rather than opening its own.
-- `hub.upload=false` and `video.enabled=false` — trials never publish to the
-  HF Hub and never capture video.
+- `hub.upload=false` and `val.enabled=false` — trials never publish to the
+  HF Hub, and training's own val cadence is off. Instead each vector trial
+  schedules exactly two val rounds of its own (`ValEpisodeCallback` with
+  `at_steps` at the trial's mid-point and `final=true`): one episode at a
+  seed every trial shares (`SWEEP_VAL_SEED`), rendered to composite and FPV
+  video, with the 3D trajectory/attitude and reward/force/torque plots under
+  `val/*` — so any two trials' approaches can be watched side by side at
+  like-for-like points.
 - Everything in a trial's `wandb.config` besides `algo` (selects the `rl`
   group), `trial_timesteps` (→ `rl.total_timesteps`), `obs` (→ `rl.obs`),
   and `seed` routes straight to `rl.hyperparams.<key>` — so a spec tunes a
@@ -151,3 +159,13 @@ top of reward: per finished episode, a windowed rate of how it ended
 approach to the goal (minimum position, velocity, attitude, and body-rate
 error). Reward alone cannot tell a policy that is docking more often from
 one that is just colliding less; `docking/*` can.
+
+Training runs additionally log `val/*` (via `ValEpisodeCallback`,
+`val.enabled=true` by default, every `val.every_steps` steps): a handful of
+known-seed deterministic episodes on the dock task, with composite and FPV
+videos of the first episode, 3D relative-frame trajectory plots (start
+point, target dock port, and body-axis triads showing attitude — with and
+without the triads), and per-step reward, force, and torque traces. The
+seeds are fixed at launch, so successive rounds are the same episodes flown
+by a progressively trained policy. Envs with `dock.enabled=false` skip these
+rounds — there is no dock trajectory to measure.

@@ -1,5 +1,11 @@
 set dotenv-load
 
+# Vulkan does not honour CUDA_VISIBLE_DEVICES, so without this the val-episode
+# renderer lands on GPU 0 -- an H100 another tenant is using. The RTX PRO
+# 6000s (GPUs 2/3) are ours, and are the only adapters matching this name;
+# pygfx reads the variable and picks the first match.
+export PYGFX_WGPU_ADAPTER_NAME := "RTX PRO 6000"
+
 # Launch a fresh PPO / SAC training run (extra hydra overrides pass through)
 train-ppo *ARGS:
     uv run python -m owm.baselines.rl.train rl=ppo {{ARGS}}
@@ -16,7 +22,8 @@ smoke:
     WANDB_MODE=offline uv run python -m owm.baselines.rl.train rl=ppo \
         rl.n_envs=2 rl.vec=dummy rl.device=cpu rl.total_timesteps=2048 \
         rl.hyperparams.n_steps=256 rl.hyperparams.batch_size=256 \
-        rl.checkpoint.save_freq=1024 hub.upload=false run_dir=runs/smoke
+        rl.checkpoint.save_freq=1024 hub.upload=false val.enabled=false \
+        run_dir=runs/smoke
 
 # Evaluate a checkpoint (local path or hf:org/repo/path.zip)
 eval CKPT *ARGS:
@@ -27,15 +34,17 @@ sweep-init SWEEP:
     uv run wandb sweep --entity "$WANDB_ENTITY" --project "$WANDB_PROJECT" \
         sweeps/{{SWEEP}}.yaml
 
-# Run one sweep agent (PPO on CPU, SAC on GPU 0); stop it with Ctrl-C
-sweep-agent SWEEP_ID SWEEP:
+# Run one sweep agent (PPO on CPU, SAC on the given GPU); stop it with Ctrl-C
+sweep-agent SWEEP_ID SWEEP GPU="2":
     #!/usr/bin/env bash
     set -euo pipefail
     # Keyed on the spec's algo prefix, so every obs mode of an algo lands on
-    # the same device. SAC gets GPU 0 and only GPU 0: GPU 1 is someone else's.
+    # the same device class. GPUs 0 and 1 (the H100s) belong to other
+    # tenants; a SAC agent takes one of GPUs 2/3 (the RTX PRO 6000s) --
+    # pass a trailing 3 to run a second agent beside the first.
     case "{{SWEEP}}" in
         ppo_*) export CUDA_VISIBLE_DEVICES="" ;;
-        sac_*) export CUDA_VISIBLE_DEVICES="0" ;;
+        sac_*) export CUDA_VISIBLE_DEVICES="{{GPU}}" ;;
         *) echo "unknown sweep '{{SWEEP}}': expected ppo_* or sac_*" >&2; exit 1 ;;
     esac
     uv run wandb agent "$WANDB_ENTITY/$WANDB_PROJECT/{{SWEEP_ID}}"

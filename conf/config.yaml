@@ -16,10 +16,16 @@ extend_timesteps: null
 # trials): training logs into that run instead of starting one of its own.
 external_wandb: false
 
-video:
-  enabled: false
-  every_steps: 250000
-  max_frames: 1200      # 60 s at render_fps=20
+# Periodic validation episodes on the dock task: known-seed deterministic
+# rollouts logged to wandb as composite+FPV video, 3D trajectory/attitude
+# plots, and reward/force/torque traces (val/*). Needs the render assets on
+# disk whenever video_episodes > 0 -- see README's Rendering section.
+val:
+  enabled: true
+  every_steps: 50000
+  episodes: 3
+  video_episodes: 1     # the first N episodes are rendered to video
+  max_frames: 1200      # 60 s at render_fps=20; plots always cover the whole episode
 hub:
   upload: true
   repo_id: ${oc.env:OWM_HF_MODEL_REPO,null}
