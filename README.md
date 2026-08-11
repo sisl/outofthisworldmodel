@@ -12,8 +12,10 @@ follow-up plan alongside the world-model side.
   for the world-model side; it is not yet in `pyproject.toml` — integration
   lands in a follow-up plan alongside the owm-v1 and dreamer-v3
   implementations.
-- **owm-envs** ships the `ISSEnv` simulator and its 3D render assets, and is
-  pinned as a git dependency in `pyproject.toml`.
+- **owm-envs** ships the ISS docking environments — `iss`, `iss-hcw` and
+  `iss-numerical`, which differ in the dynamics they fly the same task under —
+  and their 3D render assets, and is pinned as a git dependency in
+  `pyproject.toml`.
 
 ## Setup
 
@@ -43,6 +45,30 @@ just test-network            # pytest -m network only
 All recipes are thin wrappers over hydra entry points; extra `key=value`
 overrides pass straight through, e.g.
 `just train-ppo rl.total_timesteps=1000000 seed=1`.
+
+### Environments
+
+`conf/environments/` holds one file per training environment, selected with
+`environments=<name>`:
+
+| group | env | observation | notes |
+| --- | --- | --- | --- |
+| `iss_coop_goal` | `iss` | 25 | the published dataset family's config; the default |
+| `iss_coop_goal_ports` | `iss` | 25 | the above plus the five train-split dock ports |
+| `iss_coop_goal_ports_heldout` | `iss` | 25 | the two val-only ports, for goal generalization |
+| `iss_coop_goal_ports_render224` | `iss` | 25 | `iss_coop_goal_ports` rendered at the ResNet's input size |
+| `iss_numerical_ports` | `iss-numerical` | 27 | full ECI propagation with J2–J6, third-body and drag |
+
+A group file names its environment with the reserved `env_name` key, which is
+a name in owm-envs' own env registry; absent, it means `iss`. Everything else
+in the file is that environment's config class.
+
+`iss_numerical_ports` flies the same task, gates, reward weights and five
+train-split ports as `iss_coop_goal_ports`, on perturbed two-vehicle orbital
+dynamics instead of rigid-body free-flyer ones. Its observation is the same
+13-element relative view plus the same 12-element goal-error block, with a
+`[jd, sec]` epoch prefix ahead of them — 27 values rather than 25 — so a
+policy config carries over but its `VecNormalize` statistics do not.
 
 To swap the training environment for one derived from a published dataset's
 as-run config instead of the committed inline config, add
@@ -161,7 +187,7 @@ uv run python -m owm.baselines.rl.hub <run_dir> [repo_id]
 ```
 runs/<run_name>/
   config.yaml                    resolved hydra config, written at launch
-  env_config.yaml                 concrete ISSConfig the run trained on
+  env_config.yaml                 concrete env config the run trained on
   wandb_run_id.txt                wandb id, so resume reattaches to the run
   checkpoints/model_<N>_steps.zip (+ vecnormalize/replay_buffer siblings)
   final_model.zip / vecnormalize.pkl
