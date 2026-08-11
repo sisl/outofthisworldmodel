@@ -10,18 +10,15 @@ layout); this is the operational runbook.
 Two fixed-goal 5,000,000-step baselines, trained before the random-port goal
 distribution (`iss_coop_goal_ports`) existed, on the single PMA-2 pose from
 `environments=iss_coop_goal` with each algorithm's plain `conf/rl/ppo.yaml` /
-`conf/rl/sac.yaml` hyperparameters (no tuning). They predate the sweep infra
-and stand as the pre-ports reference point, not a tuned result:
-
-| run | wandb id | wandb URL |
-|---|---|---|
-| `ppo_iss_coop_goal` | `u95byryx` | https://wandb.ai/duncan-world-models/amos-out-of-this-world-model/runs/u95byryx |
-| `sac_iss_coop_goal` | `hz4zothb` | https://wandb.ai/duncan-world-models/amos-out-of-this-world-model/runs/hz4zothb |
+`conf/rl/sac.yaml` hyperparameters (no tuning): `ppo_iss_coop_goal` and
+`sac_iss_coop_goal`. They predate the sweep infra and stand as the
+pre-ports reference point, not a tuned result.
 
 Both finished their full 5M-step budget and their final artifacts are
-uploaded to the HF Hub repo `sislaboratory/out-of-this-world-model`, under
+uploaded to the HF Hub repo configured as `OWM_HF_MODEL_REPO`, under
 `rl/ppo_iss_coop_goal/` and `rl/sac_iss_coop_goal/` respectively
-(`final_model.zip`, `vecnormalize.pkl`, `config.yaml`).
+(`final_model.zip`, `vecnormalize.pkl`, `config.yaml`) — the same
+`rl/<run_name>/` layout every run publishes to, per `hub.py`.
 
 ## Sweep lifecycle
 
