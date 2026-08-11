@@ -18,6 +18,7 @@ dependencies = [
     "moviepy>=1.0",
     "imageio[ffmpeg]>=2.31",
     "torchvision>=0.20",
+    "click>=8.1",
 ]
 
 [tool.uv.sources]

@@ -1082,6 +1082,7 @@ name = "owm"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "click" },
     { name = "gymnasium" },
     { name = "huggingface-hub" },
     { name = "hydra-core" },
@@ -1104,6 +1105,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "click", specifier = ">=8.1" },
     { name = "gymnasium", specifier = ">=1.0" },
     { name = "huggingface-hub", specifier = ">=0.34" },
     { name = "hydra-core", specifier = ">=1.3" },

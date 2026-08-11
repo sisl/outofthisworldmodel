@@ -9,10 +9,10 @@ failed or was skipped, republish it manually:
 
 from __future__ import annotations
 
-import argparse
 import os
 from pathlib import Path
 
+import click
 from dotenv import load_dotenv
 from huggingface_hub import HfApi
 
@@ -49,19 +49,20 @@ def upload_run(run_dir: Path, repo_id: str) -> str:
     return f"https://huggingface.co/{repo_id}/tree/main/rl/{run_dir.name}"
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Publish a finished RL run's finals to the HF Hub.")
-    parser.add_argument("run_dir", type=Path, help="run directory, e.g. runs/ppo_a")
-    parser.add_argument(
-        "repo_id",
-        nargs="?",
-        default=os.environ.get("OWM_HF_MODEL_REPO"),
-        help="HF model repo id; defaults to $OWM_HF_MODEL_REPO",
-    )
-    args = parser.parse_args()
-    if not args.repo_id:
-        parser.error("repo_id not given and OWM_HF_MODEL_REPO is not set")
-    print(upload_run(args.run_dir, args.repo_id))
+@click.command()
+@click.argument("run_dir", type=click.Path(path_type=Path))
+@click.argument("repo_id", required=False, default=None)
+def main(run_dir: Path, repo_id: str | None) -> None:
+    """Publish a finished RL run's finals to the HF Hub.
+
+    RUN_DIR is the run directory, e.g. runs/ppo_a. REPO_ID is the HF model
+    repo id; defaults to $OWM_HF_MODEL_REPO.
+    """
+    if not repo_id:
+        repo_id = os.environ.get("OWM_HF_MODEL_REPO")
+    if not repo_id:
+        raise click.UsageError("repo_id not given and OWM_HF_MODEL_REPO is not set")
+    print(upload_run(run_dir, repo_id))
 
 
 if __name__ == "__main__":

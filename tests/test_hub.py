@@ -1,9 +1,10 @@
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
 from owm.baselines.rl import hub
-from owm.baselines.rl.hub import upload_run
+from owm.baselines.rl.hub import main, upload_run
 from owm.baselines.rl.run_state import FINAL_MODEL, FINAL_VECNORM
 
 
@@ -56,3 +57,18 @@ def test_upload_publishes_a_complete_run(tmp_path: Path, monkeypatch):
     assert url.endswith(f"/rl/{tmp_path.name}")
     assert api.calls[0] == {"create_repo": "org/repo"}
     assert api.calls[1]["allow_patterns"] == [FINAL_MODEL, FINAL_VECNORM, "config.yaml"]
+
+
+def test_cli_help_exits_zero():
+    result = CliRunner().invoke(main, ["--help"])
+
+    assert result.exit_code == 0
+
+
+def test_cli_without_repo_id_or_env_var_exits_two(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("OWM_HF_MODEL_REPO", raising=False)
+
+    result = CliRunner().invoke(main, [str(tmp_path)])
+
+    assert result.exit_code == 2
+    assert "OWM_HF_MODEL_REPO" in result.output
