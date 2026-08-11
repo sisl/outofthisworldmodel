@@ -22,7 +22,11 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-owm-envs = { git = "ssh://git@github.com/sisl/outofthisworldmodel-envs.git", rev = "6ae3a891e233d43283d2016f42a210da59b1428c" }
+# Tracks main rather than a SHA: uv.lock still records the exact commit
+# resolved at lock time, and `uv lock --upgrade-package owm-envs` is what
+# moves it forward. Re-apply the git-lfs asset patch (README, Rendering
+# section) after every move.
+owm-envs = { git = "ssh://git@github.com/sisl/outofthisworldmodel-envs.git", rev = "main" }
 # Local development against a checkout instead of the pin:
 # owm-envs = { path = "../outofthisworldmodel-envs", editable = true }
 
