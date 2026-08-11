@@ -55,3 +55,11 @@ parameters:
     values: [0.1, 0.2, 0.3]
   n_epochs:
     values: [5, 10, 20]
+  # Worked example of adding a new swept hyperparameter: uncomment to tune
+  # PPO's value-function loss coefficient too. No other file needs to
+  # change — an unrouted key like vf_coef lands in rl.hyperparams.vf_coef,
+  # a real PPO constructor argument, the moment sweep_trial.py sees it.
+  # vf_coef:
+  #   distribution: uniform
+  #   min: 0.3
+  #   max: 0.7

@@ -38,15 +38,30 @@ EVAL_EPISODES = 5
 FINAL_EVAL_EPISODES = 20
 DEFAULT_MAX_SECONDS = 7200.0
 
+# How to add a hyperparameter to a sweep: add it to the spec's `parameters`
+# (sweeps/<name>.yaml) with a wandb distribution — see
+# https://docs.wandb.ai/guides/sweeps/define-sweep-configuration for the
+# distribution types. Nothing needs to change here or in the spec's `command`.
+# A key not listed in RESERVED_KEYS below routes straight to
+# `rl.hyperparams.<key>` and must be a real constructor argument of the
+# chosen algorithm's SB3 class — `test_every_swept_parameter_is_a_real_sb3_
+# argument` (tests/test_sweep_specs.py) checks every spec against that
+# algorithm's signature, so a typo'd or unsupported key fails at test time,
+# not hours into a trial.
+#
 # wandb.config keys that are not SB3 arguments, and the config path each one
-# writes. Everything not listed here is a hyperparameter for the chosen
-# algorithm, so a sweep can tune a new SB3 argument by naming it and nothing
-# else. `algo` is not routable: it picks the config group the rest lands in.
+# writes instead:
+#   algo           -- selects the `rl=<algo>` config group (not routable: it
+#                      names a group to compose, not a value to write)
+#   environments   -- selects the `environments=<name>` config group (not
+#                      routable, same reason)
+#   trial_timesteps -> rl.total_timesteps
+#   obs            -> rl.obs
+#   seed           -> seed
 ALGO_KEY = "algo"
-# Like algo, not routable: it names a config group to compose, not a value to
-# write into the composed config. Sweeps tune hyperparameters for the real
-# training distribution, the random-port goal one, so that is the default; a
-# pixel spec pins the variant of it that renders at the extractor's input size.
+# Sweeps tune hyperparameters for the real training distribution, the
+# random-port goal one, so that is the default; a pixel spec pins the variant
+# of it that renders at the extractor's input size.
 ENVIRONMENTS_KEY = "environments"
 DEFAULT_ENVIRONMENTS = "iss_coop_goal_ports"
 ROUTES = {
