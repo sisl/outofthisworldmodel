@@ -54,9 +54,9 @@ pin `trial_timesteps: 500000`.
 **Forced settings**, from `sweep_trial.py`'s `build_cfg` (verified against
 that source, not paraphrased from memory):
 
-- `environments=iss_coop_goal_ports` is forced at compose time — every trial
-  tunes hyperparameters against the actual random 5-port goal distribution,
-  not the single-goal group default.
+- `environments=iss_numerical_ports` is forced at compose time — every trial
+  tunes hyperparameters against the training environment of record: the
+  `iss-numerical` env on the random 5-port goal distribution.
 - Resources are fixed per algorithm and **not** tunable, overwritten after
   hydra composes the base `rl=<algo>` config: PPO gets `n_envs=8,
   vec=subproc, device=cpu`; SAC gets `n_envs=4, vec=subproc,
@@ -125,18 +125,22 @@ Final baselines then launch from the frozen config against the production
 environment:
 
 ```bash
-just train-ppo rl=ppo_tuned environments=iss_coop_goal_ports
-just train-sac rl=sac_tuned environments=iss_coop_goal_ports
+just train-ppo rl=ppo_tuned environments=iss_numerical_ports
+just train-sac rl=sac_tuned environments=iss_numerical_ports
 ```
 
 `conf/rl/ppo_tuned.yaml` and `conf/rl/sac_tuned.yaml` are the paper-record
 configs — any reported final baseline number should trace back to a run
 launched from one of them, not from a sweep trial or the untuned defaults.
 
-**Status.** Winners frozen for both vector sweeps (`ppo_vector` sweep
-`h4be1smz`, `sac_vector` sweep `a5kxxtk2`) as of 2026-08-08. The pixel
-sweeps (`ppo_resnet`, `sac_resnet`) are still running; their winners are not
-yet frozen.
+**Status.** Winners were frozen for both vector sweeps (`ppo_vector` sweep
+`h4be1smz`, `sac_vector` sweep `a5kxxtk2`) as of 2026-08-08, but those
+trials ran on the `iss` env under the pre-reshape reward — the frozen
+`*_tuned.yaml` configs predate both the `iss-numerical` retarget and the
+reward reshape, so the vector sweeps are being rerun against
+`iss_numerical_ports` before any new baseline launches from them. The pixel
+sweeps (`ppo_resnet`, `sac_resnet`) are deferred until the vector winners
+are refrozen.
 
 ## Telemetry
 

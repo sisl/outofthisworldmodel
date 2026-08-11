@@ -1,7 +1,10 @@
 # ISSConfig for the sislaboratory/owm-iss-coop-goal-dt50ms dataset family:
 # cooperative sensor noise, goal-error observation block, dt = 50 ms.
-# Mirrors owm-envs configs/iss_coop_goal.toml; verified against the
-# dataset's env_config.yaml by tests/test_dataset_config_match.py.
+# Mirrors owm-envs configs/iss/env/coop_goal.toml; verified against the
+# dataset's env_config.yaml by tests/test_dataset_config_match.py. The
+# published dataset was generated before the reward reshape carried in the
+# reward_weights/reward_shaping blocks below, so that network-marked check
+# reports a reward mismatch until the dataset is regenerated.
 dt: 0.05
 max_steps: 7200
 max_range_m: 750.0
@@ -35,8 +38,21 @@ sensor_noise:
 observation:
   goal_error: true
 reward_weights:
-  position: -1.0
-  velocity: -0.35
-  angular_velocity: -0.1
-  control_effort: -0.05
+  position: -0.5
+  velocity: -0.2
+  attitude: -0.2
+  body_rate: -0.1
   collision: -1000000.0
+  dock_success: 10000.0
+  escape: -10000.0
+reward_shaping:
+  position_delta_m: 1.0
+  position_scale_m: 225.0
+  velocity_delta_m_s: 0.1
+  velocity_scale_m_s: 5.0
+  attitude_delta_rad: 0.05
+  attitude_scale_rad: 3.141592653589793
+  rate_delta_rad_s: 0.005
+  rate_scale_rad_s: 0.05
+  rotation_gate_far: 0.1
+  rotation_gate_range_m: 25.0

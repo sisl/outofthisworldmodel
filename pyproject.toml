@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-owm-envs = { git = "ssh://git@github.com/sisl/outofthisworldmodel-envs.git", rev = "34c1a7c9d7a9e3ad4121cd242d8bffd0db76fb5e" }
+owm-envs = { git = "ssh://git@github.com/sisl/outofthisworldmodel-envs.git", rev = "6ae3a891e233d43283d2016f42a210da59b1428c" }
 # Local development against a checkout instead of the pin:
 # owm-envs = { path = "../outofthisworldmodel-envs", editable = true }
 

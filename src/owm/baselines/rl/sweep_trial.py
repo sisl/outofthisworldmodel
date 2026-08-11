@@ -63,7 +63,7 @@ ALGO_KEY = "algo"
 # random-port goal one, so that is the default; a pixel spec pins the variant
 # of it that renders at the extractor's input size.
 ENVIRONMENTS_KEY = "environments"
-DEFAULT_ENVIRONMENTS = "iss_coop_goal_ports"
+DEFAULT_ENVIRONMENTS = "iss_numerical_ports"
 ROUTES = {
     "trial_timesteps": "rl.total_timesteps",
     "obs": "rl.obs",

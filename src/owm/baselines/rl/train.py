@@ -45,10 +45,10 @@ from owm.envs.factory import (
     ENV_NAME_KEY,
     env_conf_dict,
     env_config,
-    env_spec,
     make_vec_env,
     preflight_render,
     require_renderable,
+    task_config_from_yaml,
 )
 
 load_dotenv()
@@ -228,7 +228,7 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
     env_record = run_dir / "env_config.yaml"
     if resume and env_record.exists():
         env_name = str(cfg.environments.get(ENV_NAME_KEY, DEFAULT_ENV_NAME))
-        task_cfg = env_spec(env_name).config_cls.from_yaml(env_record)
+        task_cfg = task_config_from_yaml(env_name, env_record)
     else:
         task_cfg = env_config(cfg.environments)
         task_cfg.to_yaml(env_record)
