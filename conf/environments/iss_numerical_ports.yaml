@@ -1,0 +1,124 @@
+# NumericalConfig for RL training on the iss-numerical environment, on the
+# same random-port goal distribution iss_coop_goal_ports.yaml trains on.
+#
+# iss-numerical propagates the chief and the chaser as independent ECI states
+# through the zonal gravity field, so it captures J2-J6, third-body pull and
+# drag that the iss env's rigid-body free-flyer dynamics do not represent at
+# all. The task, the gates, the reward weights and the port set are unchanged
+# from iss_coop_goal_ports.yaml; what differs is the force model underneath
+# them, the observation's frame, and where the start dispersions are read from.
+#
+# The published datasets and their cross-check stay on the `iss` env
+# (tests/test_dataset_config_match.py): nothing here describes a dataset.
+
+# Which env of the owm-envs suite this config is for. Reserved key, lifted out
+# before the rest is validated as that env's config class -- see
+# owm.envs.factory. Absent means "iss", so every config written before the
+# suite existed still means the env it always meant.
+env_name: iss-numerical
+
+dt: 0.05
+max_steps: 7200
+max_range_m: 750.0
+render_view: DRAGON_FPV
+physics:
+  mass: 12000.0
+  inertia_diag: [80000.0, 80000.0, 50000.0]
+  linear_damping: 0.0
+  angular_damping: 0.0
+  dragon_collision_radius_m: 2.25
+  collision_boxes_path: collision_boxes.yaml
+  # NOTE: physics.start_radius_range_m is deliberately NOT set here. On this
+  # env it is never read -- NumericalConfig.start_shell() returns
+  # orbit.start_radius_range_m instead, and NumericalDynamics.reset draws from
+  # that. Setting it here would look like it configured the start shell while
+  # changing nothing. The shell lives under `orbit` below.
+control:
+  limit_force_n: 1600.0
+  limit_torque_nm: 2000.0
+dock:
+  position: [0.225, -24.5, -2.5]
+  quaternion: [0.7071068, -0.7071068, 0.0, 0.0]
+  enabled: true
+  max_distance_m: 0.1
+  max_velocity_m_s: 0.5
+  max_attitude_error_deg: 5.0
+  max_body_rate_rad_s: 0.008727
+  # The same five train-split ports iss_coop_goal_ports.yaml uses, in the same
+  # order, and they mean the same episodes: dock.ports is a field of the
+  # SHARED DockConfig, resolved by the same docking_ports.resolve_port_entries
+  # for every env in the suite, and the per-episode draw is the shared
+  # PortGoalMixin both ISSEnv and NumericalEnv inherit. So this is not a
+  # mapping between two port mechanisms -- it is one mechanism, and the port
+  # poses are chief-relative world-frame poses on both envs.
+  #
+  # Order is load-bearing for the same reason it is there: the drawn port is
+  # reported as a positional dock_port_index, so reordering changes what index
+  # N means without changing anything else.
+  ports:
+    - harmony_fwd_pma2
+    - harmony_nadir_cbm
+    - zvezda_aft
+    - pirs_nadir
+    - rassvet_nadir
+orbit:
+  epoch: "2026-08-01T00:00:00Z"
+  # One ISS orbital period of start-phase dispersion, from owm-envs'
+  # configs/iss_numerical_default.toml. The iss env has no counterpart to this
+  # knob -- it has no orbit -- so there is nothing to carry over from
+  # iss_coop_goal_ports.yaml, and the env's own default is what is followed.
+  # A zero-width range would start every episode at the same point in the
+  # orbit, which would let a policy learn one lighting and one perturbation
+  # phase rather than the orbit.
+  epoch_offset_range_s: [0.0, 5400.0]
+  # The iss env's start shell, carried over verbatim from
+  # iss_coop_goal_ports.yaml's physics.start_radius_range_m.
+  start_radius_range_m: [100.0, 500.0]
+  # Zero, matching ISSDynamics.reset -- which starts every episode at rest in
+  # the world frame, nose on the ISS, with zero body rates. These are NOT the
+  # upstream iss_numerical_default.toml values (0.1 m/s, 10 deg, 0.01 rad/s):
+  # the point of this config is to change the force model and the observation
+  # while holding the start distribution where the iss runs had it, so a
+  # numerical run's numbers can be read against them. Raise them to disperse
+  # the initial motion.
+  start_speed_max_m_s: 0.0
+  start_attitude_error_max_deg: 0.0
+  start_rate_max_rad_s: 0.0
+perturbations:
+  # From owm-envs' configs/iss_numerical_default.toml. These are what this env
+  # exists to model, and switching them off would leave two-body motion the
+  # iss env already approximates.
+  zonal_max_degree: 4
+  third_body_sun: true
+  third_body_moon: true
+  drag: true
+sensor_noise:
+  enabled: true
+  sigma_pos_m: 0.05
+  sigma_pos_frac_of_range: 0.0
+  sigma_vel_m_s: 0.002
+  sigma_att_rad: 5.0e-05
+  sigma_rate_rad_s: 1.0e-05
+observation:
+  goal_error: true
+  # 15 wide: [epoch(2) | relative_view(13)], plus the 12-wide goal-error block
+  # above it, so the policy reads 27 values.
+  #
+  # This is the mode closest to the 25-dim vector the iss runs trained on. The
+  # 13-element relative_view block is element for element what ISSEnv carries
+  # in-state -- world-frame position and velocity relative to the chief, q_bw,
+  # and world-relative body rates -- so 25 of the 27 channels mean exactly what
+  # they meant before. The two new ones are the [jd, sec] epoch prefix, which
+  # is where in the orbit the episode is.
+  #
+  # The alternative modes ("absolute", "chaser_absolute", "chief_absolute")
+  # are 21 wide and report ECI state, handing the policy ~6.8e6 m inertial
+  # positions instead of a ~100 m relative one. That is a different learning
+  # problem, not a continuation of this one.
+  mode: relative
+reward_weights:
+  position: -1.0
+  velocity: -0.35
+  angular_velocity: -0.1
+  control_effort: -0.05
+  collision: -1000000.0

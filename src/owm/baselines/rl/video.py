@@ -7,7 +7,7 @@ import numpy as np
 import wandb
 from stable_baselines3.common.callbacks import BaseCallback
 
-from owm.envs.factory import iss_config, make_iss_env
+from owm.envs.factory import env_config, make_env
 
 
 class VideoEvalCallback(BaseCallback):
@@ -52,8 +52,8 @@ class VideoEvalCallback(BaseCallback):
     def _record(self) -> None:
         if self._env is None:
             # Lazy: rendering pulls in pygfx/GL, and only if videos are on.
-            self._env = make_iss_env(iss_config(self._env_conf), seed=self._seed,
-                                     render=True)
+            self._env = make_env(env_config(self._env_conf), seed=self._seed,
+                                 render=True)
         vecnorm = self.model.get_vec_normalize_env()
         frames: list[np.ndarray] = []
         ep_return, success = 0.0, False

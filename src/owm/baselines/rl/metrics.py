@@ -52,7 +52,8 @@ class DockingMetricsCallback(BaseCallback):
             if "goal_error_true" not in info:
                 print(
                     "[docking] WARNING infos have no goal_error_true "
-                    "(not an ISSEnv?); disabling DockingMetricsCallback"
+                    "(not an owm-envs docking env?); disabling "
+                    "DockingMetricsCallback"
                 )
                 self._disabled = True
                 return True

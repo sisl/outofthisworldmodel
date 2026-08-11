@@ -14,7 +14,6 @@ import hydra
 import wandb
 from dotenv import load_dotenv
 from omegaconf import DictConfig, OmegaConf
-from owm_envs.envs.iss.config import ISSConfig
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.vec_env import VecNormalize
@@ -41,7 +40,16 @@ from owm.baselines.rl.run_state import (
     vecnormalize_for,
 )
 from owm.baselines.rl.video import VideoEvalCallback
-from owm.envs.factory import iss_config, make_vec_env, preflight_render
+from owm.envs.factory import (
+    DEFAULT_ENV_NAME,
+    ENV_NAME_KEY,
+    env_conf_dict,
+    env_config,
+    env_spec,
+    make_vec_env,
+    preflight_render,
+    require_renderable,
+)
 
 load_dotenv()
 
@@ -96,9 +104,14 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
         # Also checked at launch rather than at the first recording, hours in.
         raise SystemExit(
             "rl.obs=vector_resnet with video.enabled=true: the video env is built "
-            "with vector observations, so its rollout would hand the policy a "
-            "25-dim observation it cannot read (set video.enabled=false)"
+            "with vector observations, so its rollout would hand the policy an "
+            "observation of the wrong width to read (set video.enabled=false)"
         )
+    if cfg.video.enabled:
+        # Same reason: the video env is built lazily at the first recording,
+        # so an env that ships no render adapter would otherwise surface only
+        # once the cadence first came due.
+        require_renderable(str(cfg.environments.get(ENV_NAME_KEY, DEFAULT_ENV_NAME)))
 
     # Only meaningful for the run this function owns; an external run's id is
     # the agent's business, and recording it here would invite a resume to
@@ -207,21 +220,27 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
     # resume reads that record back instead of re-resolving: an unpinned
     # dataset ref can move, which would leave the run's legs training under
     # different dynamics than the file claims.
+    #
+    # The record holds the task config alone, the shape a published dataset
+    # ships and nothing more, so which env of the suite it belongs to is read
+    # back off the run's own saved hydra config beside it -- absent on a run
+    # started before the suite, which is exactly a run on `iss`.
     env_record = run_dir / "env_config.yaml"
     if resume and env_record.exists():
-        iss_cfg = ISSConfig.from_yaml(env_record)
+        env_name = str(cfg.environments.get(ENV_NAME_KEY, DEFAULT_ENV_NAME))
+        task_cfg = env_spec(env_name).config_cls.from_yaml(env_record)
     else:
-        iss_cfg = iss_config(cfg.environments)
-        iss_cfg.to_yaml(env_record)
+        task_cfg = env_config(cfg.environments)
+        task_cfg.to_yaml(env_record)
     # Workers and the video env get the concrete config, never the repo name:
     # each would otherwise re-download it, and could disagree about the result.
-    env_conf = iss_cfg.model_dump(mode="json")
+    env_conf = env_conf_dict(task_cfg)
 
     resnet = None
     if obs_mode == "vector_resnet":
         # One frame before any worker is spawned: a GPU that cannot serve a
         # render should say so here, not from inside a worker an hour in.
-        preflight_render(iss_cfg)
+        preflight_render(task_cfg)
         # Imported here, not at the top: owm.envs.resnet_obs pulls in
         # torchvision, and a vector run has no use for it. See the note in
         # owm/envs/factory.py.

@@ -25,6 +25,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from owm.baselines.rl.run_state import CHECKPOINT_DIR, FINAL_REPLAY_BUFFER
 from owm.baselines.rl.sweep_callbacks import EvalReportCallback, TrialTimeoutCallback
+from owm.envs.factory import DEFAULT_ENV_NAME, ENV_NAME_KEY
 from owm.baselines.rl.train import run_training
 
 load_dotenv()
@@ -227,6 +228,7 @@ def main() -> None:
                 seed=cfg.seed + 10_000,  # never the training seeds
                 obs_mode=obs_mode,
                 resnet=resnet,
+                env_name=str(cfg.environments.get(ENV_NAME_KEY, DEFAULT_ENV_NAME)),
             ),
             TrialTimeoutCallback(
                 max_seconds=float(

@@ -22,7 +22,7 @@ from omegaconf import DictConfig
 
 from owm.baselines.rl.run_state import vecnormalize_name_for
 from owm.baselines.rl.train import ALGOS
-from owm.envs.factory import iss_config, make_iss_env
+from owm.envs.factory import env_config, make_env
 
 load_dotenv()
 
@@ -89,7 +89,7 @@ def run_eval(cfg: DictConfig) -> dict:
         vecnorm.training = False
 
     record = cfg.eval.video_path is not None
-    env = make_iss_env(iss_config(cfg.environments), seed=int(cfg.seed), render=record)
+    env = make_env(env_config(cfg.environments), seed=int(cfg.seed), render=record)
 
     returns, lengths, successes, collisions = [], [], 0, 0
     frames: list[np.ndarray] = []

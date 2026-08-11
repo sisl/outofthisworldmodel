@@ -8,11 +8,10 @@ from pathlib import Path
 
 import numpy as np
 import wandb
-from owm_envs.envs.iss.config import ISSConfig
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import VecEnv
 
-from owm.envs.factory import make_vec_env
+from owm.envs.factory import DEFAULT_ENV_NAME, env_conf_dict, env_spec, make_vec_env
 
 # The sweep's objective. Bayes reads its last value, hyperband reads the
 # series, so the same key carries both the periodic and the final report.
@@ -46,6 +45,7 @@ class EvalReportCallback(BaseCallback):
         vec: str = "subproc",
         obs_mode: str = "vector",
         resnet: dict | None = None,
+        env_name: str = DEFAULT_ENV_NAME,
     ):
         super().__init__()
         # Caught at registration, i.e. at launch: an eval of no episodes only
@@ -63,6 +63,10 @@ class EvalReportCallback(BaseCallback):
         # from_dataset ref can move between two resolutions — which would score
         # the trial on dynamics it never saw.
         self._env_record = Path(run_dir) / "env_config.yaml"
+        # The record is the task config alone; which env of the suite validates
+        # and flies it comes from the trial's own composed config, the same
+        # place training reads it from.
+        self._env_name = env_name
         self._every = every_steps
         self._episodes = episodes
         self._final_episodes = final_episodes
@@ -194,7 +198,9 @@ class EvalReportCallback(BaseCallback):
             # One env for the whole run: rebuilding it per report would re-pay
             # the simulator's setup cost every cadence. Built here rather than
             # at registration because training writes the record this reads.
-            env_conf = ISSConfig.from_yaml(self._env_record).model_dump(mode="json")
+            env_conf = env_conf_dict(
+                env_spec(self._env_name).config_cls.from_yaml(self._env_record)
+            )
             self._env = make_vec_env(
                 env_conf,
                 n_envs=min(self._episodes, EVAL_ENVS),
