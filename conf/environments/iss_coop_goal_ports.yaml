@@ -1,0 +1,64 @@
+# ISSConfig for training on the published 500k dataset's random-port goal
+# distribution: iss_coop_goal.yaml plus dock.ports.
+#
+# The port set below is written out explicitly rather than derived from the
+# published dataset, because it cannot be derived from it: a dataset's
+# env_config.yaml (see tests/test_dataset_config_match.py) structurally
+# records dock.ports as an empty list -- the port set only exists on the
+# generation side, under splits.train.policy.dock.ports in owm-envs'
+# configs/generation_500k.yaml. This list is copied from there.
+#
+# Order is load-bearing: ISSEnv draws a port uniformly at reset and records
+# it as a positional dock_port_index (see owm-envs
+# src/owm_envs/envs/iss/env.py). Reordering this list changes what index N
+# means for every episode without changing anything else about the config.
+#
+# cfg.dock's own position/quaternion below is NOT equivalent to training on
+# this port set: it is a fixed pose 0.837 m from harmony_fwd_pma2's actual
+# port pose (dock.position z=-2.5 vs the port table's z=-3.336 for the same
+# port -- see owm-envs src/owm_envs/envs/iss/docking_ports.py). "Just train
+# on cfg.dock" trains on a pose that isn't on the resolved port table at all.
+dt: 0.05
+max_steps: 7200
+max_range_m: 750.0
+render_view: DRAGON_FPV
+physics:
+  mass: 12000.0
+  inertia_diag: [80000.0, 80000.0, 50000.0]
+  linear_damping: 0.0
+  angular_damping: 0.0
+  dragon_collision_radius_m: 2.25
+  start_radius_range_m: [100.0, 500.0]
+  collision_boxes_path: collision_boxes.yaml
+control:
+  limit_force_n: 1600.0
+  limit_torque_nm: 2000.0
+dock:
+  position: [0.225, -24.5, -2.5]
+  quaternion: [0.7071068, -0.7071068, 0.0, 0.0]
+  enabled: true
+  max_distance_m: 0.1
+  max_velocity_m_s: 0.5
+  max_attitude_error_deg: 5.0
+  max_body_rate_rad_s: 0.008727
+  ports:
+    - harmony_fwd_pma2
+    - harmony_nadir_cbm
+    - zvezda_aft
+    - pirs_nadir
+    - rassvet_nadir
+sensor_noise:
+  enabled: true
+  sigma_pos_m: 0.05
+  sigma_pos_frac_of_range: 0.0
+  sigma_vel_m_s: 0.002
+  sigma_att_rad: 5.0e-05
+  sigma_rate_rad_s: 1.0e-05
+observation:
+  goal_error: true
+reward_weights:
+  position: -1.0
+  velocity: -0.35
+  angular_velocity: -0.1
+  control_effort: -0.05
+  collision: -1000000.0

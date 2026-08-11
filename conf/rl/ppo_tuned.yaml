@@ -1,0 +1,39 @@
+# Winner of the PPO vector sweep, frozen per docs/baselines.md's
+# winner-freezing convention. hyperparams below are the winning trial's
+# config verbatim; everything else matches conf/rl/ppo.yaml.
+#
+#   sweep h4be1smz:
+#   https://wandb.ai/duncan-world-models/amos-out-of-this-world-model/sweeps/h4be1smz
+#   winning run daidgg4p:
+#   https://wandb.ai/duncan-world-models/amos-out-of-this-world-model/runs/daidgg4p
+#   objective (sweep/final_mean_return): -762710728.3547363
+#   frozen: 2026-08-08
+#
+# The winner was tuned at 500k steps on iss_coop_goal_ports; total_timesteps
+# below is the full production budget, not the trial's horizon.
+algo: ppo
+n_envs: 8
+vec: subproc
+total_timesteps: 5000000
+device: cpu          # SB3 PPO+MlpPolicy is faster on CPU
+# vector: the 25-dim state alone. vector_resnet: that vector with a frozen
+# pretrained ResNet's embedding of the rendered frame concatenated onto it,
+# still one flat Box, so the policy stays MlpPolicy either way. vector_resnet
+# needs an env config that renders (see environments/iss_coop_goal_ports_render224).
+obs: vector
+obs_resnet:          # read only when obs=vector_resnet
+  variant: resnet18
+  layer: avgpool     # the pooled 512-d feature the classifier head would read
+  image_size: 224
+  device: null       # null: cpu in subproc workers, else rl.device
+checkpoint:
+  save_freq: 100000  # total env steps between checkpoints
+hyperparams:
+  n_steps: 512
+  batch_size: 1024
+  learning_rate: 1.070945302600948e-05
+  gamma: 0.995
+  gae_lambda: 0.943622263296522
+  ent_coef: 0.0014316171954262189
+  clip_range: 0.3
+  n_epochs: 20

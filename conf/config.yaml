@@ -1,0 +1,31 @@
+defaults:
+  - environments: iss_coop_goal
+  - rl: ppo
+  - logging: wandb
+  - _self_
+
+run_name: ${rl.algo}_${now:%Y%m%d_%H%M%S}
+run_dir: runs/${run_name}
+resume: false
+seed: 0
+# Raise a resumed run's total_timesteps budget. Lives here rather than under
+# rl/ because rl.total_timesteps always composes to its group default, which a
+# resume cannot tell apart from a deliberate request.
+extend_timesteps: null
+# The caller already opened the wandb run and owns its lifecycle (sweep
+# trials): training logs into that run instead of starting one of its own.
+external_wandb: false
+
+video:
+  enabled: false
+  every_steps: 250000
+  max_frames: 1200      # 60 s at render_fps=20
+hub:
+  upload: true
+  repo_id: ${oc.env:OWM_HF_MODEL_REPO,null}
+eval:
+  checkpoint: null       # local path or hf:<org>/<repo>/<path/in/repo.zip>
+  episodes: 20
+  deterministic: true
+  video_path: null       # write an mp4 of the first episode here (needs render extra)
+  allow_unnormalized: false  # evaluate on raw obs when no VecNormalize stats exist

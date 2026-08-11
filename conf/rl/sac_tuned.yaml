@@ -1,0 +1,39 @@
+# Winner of the SAC vector sweep, frozen per docs/baselines.md's
+# winner-freezing convention. hyperparams below are the winning trial's
+# config verbatim; everything else matches conf/rl/sac.yaml.
+#
+#   sweep a5kxxtk2:
+#   https://wandb.ai/duncan-world-models/amos-out-of-this-world-model/sweeps/a5kxxtk2
+#   winning run z3y4zgcr:
+#   https://wandb.ai/duncan-world-models/amos-out-of-this-world-model/runs/z3y4zgcr
+#   objective (sweep/final_mean_return): -809785324.1018798
+#   frozen: 2026-08-08
+#
+# The winner was tuned at 500k steps on iss_coop_goal_ports; total_timesteps
+# below is the full production budget, not the trial's horizon.
+algo: sac
+n_envs: 4
+vec: subproc
+total_timesteps: 5000000
+device: cuda
+# vector: the 25-dim state alone. vector_resnet: that vector with a frozen
+# pretrained ResNet's embedding of the rendered frame concatenated onto it,
+# still one flat Box, so the policy stays MlpPolicy either way. vector_resnet
+# needs an env config that renders (see environments/iss_coop_goal_ports_render224).
+obs: vector
+obs_resnet:          # read only when obs=vector_resnet
+  variant: resnet18
+  layer: avgpool     # the pooled 512-d feature the classifier head would read
+  image_size: 224
+  device: null       # null: cpu in subproc workers, else rl.device
+checkpoint:
+  save_freq: 100000
+hyperparams:
+  buffer_size: 300000
+  batch_size: 1024
+  learning_rate: 1.0017934599884834e-05
+  gamma: 0.995
+  tau: 0.005950096616959167
+  train_freq: 4
+  gradient_steps: 8
+  learning_starts: 20000

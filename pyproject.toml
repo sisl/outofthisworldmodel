@@ -1,0 +1,45 @@
+[project]
+name = "owm"
+version = "0.1.0"
+description = "Out of this World Model: reference architectures and baselines for the OWM ISS environments"
+# Capped below 3.14: its argparse eagerly validates help strings and rejects
+# hydra 1.3.x's lazy --shell-completion help object, killing every hydra CLI.
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "owm-envs[render]",
+    "stable-baselines3>=2.4",
+    "gymnasium>=1.0",
+    "hydra-core>=1.3",
+    "wandb>=0.19",
+    "python-dotenv>=1.0",
+    "huggingface-hub>=0.34",
+    "numpy>=1.26",
+    "tensorboard>=2.15",
+    "moviepy>=1.0",
+    "imageio[ffmpeg]>=2.31",
+    "torchvision>=0.20",
+    "click>=8.1",
+]
+
+[tool.uv.sources]
+owm-envs = { git = "ssh://git@github.com/sisl/outofthisworldmodel-envs.git", rev = "34c1a7c9d7a9e3ad4121cd242d8bffd0db76fb5e" }
+# Local development against a checkout instead of the pin:
+# owm-envs = { path = "../outofthisworldmodel-envs", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/owm"]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not network and not render'"
+markers = [
+    "network: tests that download from Hugging Face (run explicitly with -m network)",
+    "render: tests that rasterize frames, so they need a GL stack and the owm-envs render assets on disk -- those are git-lfs tracked, and a uv install without lfs smudging leaves pointer files (run explicitly with -m render)",
+]
