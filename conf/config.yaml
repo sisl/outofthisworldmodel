@@ -1,5 +1,5 @@
 defaults:
-  - environments: iss_coop_goal
+  - environments: iss_numerical_ports
   - rl: ppo
   - logging: wandb
   - _self_

@@ -12,7 +12,12 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import VecEnv
 
 from owm.baselines.rl.metrics import GOAL_ERROR_KEYS
-from owm.envs.factory import DEFAULT_ENV_NAME, env_conf_dict, env_spec, make_vec_env
+from owm.envs.factory import (
+    DEFAULT_ENV_NAME,
+    env_conf_dict,
+    make_vec_env,
+    task_config_from_yaml,
+)
 
 # The sweep's objective. Bayes reads its last value, hyperband reads the
 # series, so the same key carries both the periodic and the final report.
@@ -267,7 +272,7 @@ class EvalReportCallback(BaseCallback):
             # the simulator's setup cost every cadence. Built here rather than
             # at registration because training writes the record this reads.
             env_conf = env_conf_dict(
-                env_spec(self._env_name).config_cls.from_yaml(self._env_record)
+                task_config_from_yaml(self._env_name, self._env_record)
             )
             self._env = make_vec_env(
                 env_conf,

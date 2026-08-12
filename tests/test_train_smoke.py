@@ -4,6 +4,7 @@ import pytest
 from conftest import smoke_cfg
 
 from owm_envs.envs.iss.config import ISSConfig
+from owm_envs.envs.iss_numerical.config import NumericalConfig
 
 from owm.baselines.rl import metrics, train
 from owm.baselines.rl.run_state import (
@@ -45,7 +46,7 @@ def test_train_smoke(tmp_path: Path, algo: str, monkeypatch):
     assert (run_dir / FINAL_REPLAY_BUFFER).exists() == (algo == "sac")
     # The env the run actually trained on, spelled out: environments=
     # from_dataset would otherwise leave only a repo name behind.
-    assert ISSConfig.from_yaml(run_dir / "env_config.yaml").dt == 0.05
+    assert NumericalConfig.from_yaml(run_dir / "env_config.yaml").dt == 0.05
 
 
 def test_docking_metrics_logged_during_training(tmp_path: Path, monkeypatch):
@@ -111,7 +112,7 @@ def test_resume_trains_the_recorded_env_and_leaves_it_alone(tmp_path: Path, monk
     # Stand in for a dataset ref that moved between the two legs: the record
     # and what a fresh resolution would produce now disagree, and the record
     # is the one the first leg actually trained under.
-    recorded = ISSConfig.from_yaml(record)
+    recorded = NumericalConfig.from_yaml(record)
     noisier = recorded.sensor_noise.model_copy(update={"sigma_pos_m": 0.123})
     recorded.model_copy(update={"sensor_noise": noisier}).to_yaml(record)
     before = record.read_text()

@@ -107,6 +107,36 @@ def env_class(env_name: str) -> type[gym.Env]:
     return load_env_creator(gym.spec(env_spec(env_name).gym_id).entry_point)
 
 
+# Reward fields the pre-reshape schema carried and the reshaped one dropped.
+# A record holding them predates owm-envs' reward reshape, and no config class
+# on the current pin can validate it: the reward it describes no longer exists
+# in the code, so the run or dataset behind it cannot be reproduced as
+# recorded. Detected up front so the failure is a sentence naming that
+# situation rather than an extra_forbidden trace from inside validation.
+PRE_RESHAPE_REWARD_KEYS = frozenset({"angular_velocity", "control_effort"})
+
+
+def task_config_from_yaml(env_name: str, path) -> BaseTaskConfig:
+    """Validate a stored task-config record against `env_name`'s config class.
+
+    The one loader for every stored env_config.yaml a run consumes — the
+    resume path, the eval and val callbacks, and the from_dataset derivation —
+    so a record that predates the reward reshape fails the same loud way at
+    every one of them.
+    """
+    payload = OmegaConf.to_container(OmegaConf.load(path))
+    stale = PRE_RESHAPE_REWARD_KEYS & set(payload.get("reward_weights") or {})
+    if stale:
+        raise SystemExit(
+            f"{path} carries pre-reshape reward_weights keys {sorted(stale)}: "
+            "the reward they configured no longer exists on this owm-envs pin. "
+            "A run recorded under it cannot be resumed or evaluated as the run "
+            "it was, and a dataset shipping it needs regenerating under the "
+            "current reward."
+        )
+    return env_spec(env_name).config_cls.model_validate(payload)
+
+
 def env_config_from_dataset(
     repo_id: str, revision: str | None = None, env_name: str = DEFAULT_ENV_NAME
 ) -> BaseTaskConfig:
@@ -114,7 +144,7 @@ def env_config_from_dataset(
         repo_id=repo_id, filename="env_config.yaml", repo_type="dataset",
         revision=revision,
     )
-    return env_spec(env_name).config_cls.from_yaml(path)
+    return task_config_from_yaml(env_name, path)
 
 
 def env_config(env_conf: DictConfig | dict) -> BaseTaskConfig:

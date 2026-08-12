@@ -31,7 +31,7 @@ def test_env_config_matches_preset_values():
 
 
 def test_make_env_shapes_and_check():
-    env = make_env(env_config(env_conf()), seed=0)
+    env = make_env(env_config(_env_conf_for("iss_coop_goal")), seed=0)
     assert env.observation_space.shape == (25,)  # 13 state + 12 goal-error
     assert env.action_space.shape == (6,)
     assert np.allclose(env.action_space.low, -1.0)
@@ -44,10 +44,32 @@ def test_make_env_shapes_and_check():
 
 
 def test_make_vec_env_dummy():
-    venv = make_vec_env(env_conf(), n_envs=2, seed=0, vec="dummy")
+    venv = make_vec_env(_env_conf_for("iss_coop_goal"), n_envs=2, seed=0, vec="dummy")
     obs = venv.reset()
     assert obs.shape == (2, 25)
     venv.close()
+
+
+def test_stored_record_round_trips_through_the_loader(tmp_path):
+    record = tmp_path / "env_config.yaml"
+    ISSConfig(dt=0.1).to_yaml(record)
+    assert factory.task_config_from_yaml("iss", record) == ISSConfig(dt=0.1)
+
+
+def test_pre_reshape_record_fails_with_a_named_error(tmp_path):
+    """A record from before the reward reshape must say so, not stack-trace.
+
+    Old runs' env_config.yaml and pre-regeneration datasets carry reward
+    fields no config class on the current pin has; validating them raw dies
+    in a pydantic extra_forbidden trace that names neither the reshape nor
+    what to do about it.
+    """
+    record = tmp_path / "env_config.yaml"
+    record.write_text(
+        "reward_weights:\n  angular_velocity: -0.1\n  control_effort: -0.05\n"
+    )
+    with pytest.raises(SystemExit, match="pre-reshape reward_weights"):
+        factory.task_config_from_yaml("iss", record)
 
 
 def test_env_config_from_dataset_reads_shipped_yaml(tmp_path, monkeypatch):
@@ -106,7 +128,7 @@ def test_ports_config_draws_a_varying_dock_port_across_resets():
 
 
 def test_no_ports_config_never_reports_a_dock_port():
-    cfg = env_config(env_conf())
+    cfg = env_config(_env_conf_for("iss_coop_goal"))
     env = make_env(cfg, seed=0)
 
     _, info = env.reset(seed=0)
@@ -253,7 +275,7 @@ def test_env_name_of_refuses_an_ambiguous_config_class(monkeypatch):
     monkeypatch.setattr(factory, "ENV_REGISTRY", doubled)
 
     with pytest.raises(ValueError, match="more than one env"):
-        factory.env_name_of(env_config(env_conf()))
+        factory.env_name_of(env_config(_env_conf_for("iss_coop_goal")))
 
 
 def test_env_name_of_rejects_a_config_class_the_registry_does_not_know():
