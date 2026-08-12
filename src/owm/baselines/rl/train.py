@@ -269,14 +269,26 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
     if source is not None:
         venv = VecNormalize.load(str(source_vecnorm), venv)
     else:
-        # Position obs are O(100 m) while rates are O(1e-3); normalization is
-        # load-bearing. Reward normalization also tames the -1e6 collision spike.
-        # Under vector_resnet the embedding channels are normalized by the same
-        # running statistics, which is what a frozen feature wants: their scale
-        # is whatever ImageNet happened to give them, and no gradient reaches
-        # back to fix it.
+        # Position obs are O(100 m) while rates are O(1e-3); observation
+        # normalization is load-bearing. Under vector_resnet the embedding
+        # channels are normalized by the same running statistics, which is
+        # what a frozen feature wants: their scale is whatever ImageNet
+        # happened to give them, and no gradient reaches back to fix it.
+        #
+        # Reward normalization is rl.norm_reward's call and defaults off:
+        # the shaped reward already costs ~1 per step at the envelope by
+        # construction, and normalizing it lets one collision's -1e6 into
+        # the running return variance, where it crushes every shaped reward
+        # that follows. .get, not attribute access, so an rl group that does
+        # not spell the key means "off"; a resumed run never reaches this
+        # branch at all -- VecNormalize.load above restores the normalizer
+        # it actually trained with, flag included.
         venv = VecNormalize(
-            venv, norm_obs=True, norm_reward=True, clip_obs=10.0, gamma=cfg.rl.hyperparams.gamma
+            venv,
+            norm_obs=True,
+            norm_reward=bool(cfg.rl.get("norm_reward", False)),
+            clip_obs=10.0,
+            gamma=cfg.rl.hyperparams.gamma,
         )
 
     algo_cls = ALGOS[cfg.rl.algo]

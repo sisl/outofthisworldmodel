@@ -13,6 +13,12 @@ obs_resnet:          # read only when obs=vector_resnet
   layer: avgpool     # the pooled 512-d feature the classifier head would read
   image_size: 224
   device: null       # null: cpu in subproc workers, else rl.device
+# Observations are always normalized (positions are O(100 m) against O(1e-3)
+# body rates). Reward normalization is its own switch and defaults OFF: the
+# shaped reward already costs ~1 per step at the envelope by construction,
+# while a single collision's -1e6 lands in the normalizer's running return
+# variance and crushes every shaped reward that follows it.
+norm_reward: false
 checkpoint:
   save_freq: 100000  # total env steps between checkpoints
 hyperparams:
