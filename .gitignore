@@ -228,3 +228,4 @@ outputs/
 multirun/
 wandb/
 pocs/
+nohup.out
