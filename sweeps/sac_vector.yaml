@@ -35,6 +35,16 @@ parameters:
     # The trial's whole horizon. Pinned per spec rather than in code so a
     # slower obs mode can buy itself a different one.
     value: 500000
+  policy_kwargs:
+    # Network capacity, as one categorical: SB3's MlpPolicy defaults differ
+    # per algorithm (PPO 64x64, SAC 256x256), so the options span both
+    # defaults plus one wider and one deeper net. A dict-valued categorical
+    # routes to rl.hyperparams.policy_kwargs like any other SB3 argument.
+    values:
+      - {net_arch: [64, 64]}
+      - {net_arch: [256, 256]}
+      - {net_arch: [512, 512]}
+      - {net_arch: [256, 256, 256]}
   learning_rate:
     distribution: log_uniform_values
     min: 1.0e-5
