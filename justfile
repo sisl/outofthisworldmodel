@@ -13,6 +13,14 @@ export PYGFX_WGPU_ADAPTER_NAME := "RTX PRO 6000"
 # CUDA_VISIBLE_DEVICES=2 means the GPU nvidia-smi calls 2.
 export CUDA_DEVICE_ORDER := "PCI_BUS_ID"
 
+# owm-envs ships CUDA jax, but in this repo jax only flies env dynamics, and
+# the learner (torch) owns the GPU. Left to itself, XLA initialises a backend
+# on every visible card and pre-claims ~75% of each -- including cards other
+# tenants are using. Exported here rather than trusted to owm.envs.factory's
+# setdefault, which only wins when that module is imported before anything
+# touches jax.
+export JAX_PLATFORMS := "cpu"
+
 # Launch a fresh PPO / SAC training run (extra hydra overrides pass through)
 train-ppo *ARGS:
     uv run python -m owm.baselines.rl.train rl=ppo {{ARGS}}
