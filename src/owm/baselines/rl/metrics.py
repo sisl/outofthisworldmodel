@@ -37,7 +37,7 @@ class DockingMetricsCallback(BaseCallback):
     def _on_training_start(self) -> None:
         # wandb.init(sync_tensorboard=True) already owns the implicit step
         # axis, which silently drops any step= we pass to wandb.log;
-        # docking/* gets its own step metric instead, mirroring video.py.
+        # docking/* gets its own step metric instead, mirroring val_episodes.py.
         wandb.define_metric("docking/episodes")
         wandb.define_metric("docking/*", step_metric="docking/episodes")
 

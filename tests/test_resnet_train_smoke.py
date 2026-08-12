@@ -32,14 +32,14 @@ def test_train_smoke_with_resnet_observations(tmp_path: Path, monkeypatch):
     assert model.observation_space.shape == (STATE_DIM + RESNET18_EMBED_DIM,)
 
 
-def test_video_capture_is_refused_with_resnet_observations(tmp_path: Path, monkeypatch):
+def test_val_episodes_are_refused_with_resnet_observations(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("WANDB_MODE", "offline")
     # Assigned rather than overridden: conftest's SMOKE list already pins
-    # video.enabled, and hydra rejects the same key twice.
+    # val.enabled, and hydra rejects the same key twice.
     cfg = smoke_cfg(tmp_path, "ppo", extra=["rl.obs=vector_resnet"])
-    cfg.video.enabled = True
+    cfg.val.enabled = True
 
-    with pytest.raises(SystemExit, match="video.enabled=true"):
+    with pytest.raises(SystemExit, match="val.enabled=true"):
         run_training(cfg)
 
     # Refused before the run dir was claimed, so the fixed launch can reuse it.

@@ -177,7 +177,8 @@ def require_renderable(env_name: str) -> None:
 
     The registry's `renderable` is the suite's own answer to "can the video
     path draw this env at all", which is exactly what both frame-consuming
-    callers -- rl.obs=vector_resnet and video.enabled=true -- are asking.
+    callers -- rl.obs=vector_resnet and val-episode video capture -- are
+    asking.
     Every env in the suite today answers yes, iss-numerical included; this
     guard is what keeps a future one that does not from failing deep inside
     the renderer hours into a run instead of here.
@@ -187,7 +188,8 @@ def require_renderable(env_name: str) -> None:
         raise SystemExit(
             f"env {spec.name!r} cannot be rendered (owm-envs registers it with "
             "renderable=False, meaning it ships no render adapter), so it "
-            "supports neither rl.obs=vector_resnet nor video.enabled=true"
+            "supports neither rl.obs=vector_resnet nor val-episode video "
+            "capture (set val.video_episodes=0 or val.enabled=false)"
         )
 
 

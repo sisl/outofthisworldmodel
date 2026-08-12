@@ -156,7 +156,12 @@ not given equal wall-clock, so read its results with the time bound in mind.
 
 `just sweep-agent` pins the devices: PPO runs with `CUDA_VISIBLE_DEVICES=""`
 (SB3's `MlpPolicy` PPO is faster on CPU anyway), SAC with
-`CUDA_VISIBLE_DEVICES="0"` and `rl.device=cuda:0`.
+`CUDA_VISIBLE_DEVICES` narrowed to one of this machine's own GPUs (2 by
+default; pass a trailing `3` for a second agent) and `rl.device=cuda:0`,
+which then means that one visible device. The justfile also exports
+`PYGFX_WGPU_ADAPTER_NAME` so val-episode rendering, which Vulkan would
+otherwise put on GPU 0 regardless of `CUDA_VISIBLE_DEVICES`, lands on those
+same GPUs.
 
 ### external_wandb
 
@@ -231,8 +236,9 @@ present and skips publishing entirely, so the wandb artifact stays missing;
 
 ## Rendering and video
 
-Video capture (`video.enabled=true`) and eval video
-(`eval.video_path=...`) both need owm-envs' `render` extra's 3D assets. A
+Val-episode video capture (`val.enabled=true` with `val.video_episodes > 0`,
+the default) and eval video (`eval.video_path=...`) both need owm-envs'
+`render` extra's 3D assets. A
 `uv sync`-installed `owm-envs[render]` currently ships git-lfs pointer
 files instead of the real `.glb` assets (an upstream owm-envs packaging
 issue), which surfaces as the renderer failing to load an asset. Workaround:

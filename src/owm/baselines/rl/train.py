@@ -39,12 +39,13 @@ from owm.baselines.rl.run_state import (
     save_wandb_id,
     vecnormalize_for,
 )
-from owm.baselines.rl.video import VideoEvalCallback
+from owm.baselines.rl.val_episodes import ValEpisodeCallback
 from owm.envs.factory import (
     DEFAULT_ENV_NAME,
     ENV_NAME_KEY,
     env_conf_dict,
     env_config,
+    env_name_of,
     make_vec_env,
     preflight_render,
     require_renderable,
@@ -100,18 +101,27 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
     # .get, not attribute access: a run started before rl.obs existed resumes
     # from a saved config that has no such key, and it trained on vectors.
     obs_mode = str(cfg.rl.get("obs", "vector"))
-    if obs_mode == "vector_resnet" and cfg.video.enabled:
-        # Also checked at launch rather than at the first recording, hours in.
+    # .get for the same reason: a run started before val existed resumes from
+    # a saved config with no such block, and it scheduled no val rounds.
+    val_conf = cfg.get("val")
+    val_enabled = bool(val_conf and val_conf.enabled)
+    if obs_mode == "vector_resnet" and val_enabled:
+        # Also checked at launch rather than at the first round, hours in.
         raise SystemExit(
-            "rl.obs=vector_resnet with video.enabled=true: the video env is built "
+            "rl.obs=vector_resnet with val.enabled=true: the val env is built "
             "with vector observations, so its rollout would hand the policy an "
-            "observation of the wrong width to read (set video.enabled=false)"
+            "observation of the wrong width to read (set val.enabled=false)"
         )
-    if cfg.video.enabled:
-        # Same reason: the video env is built lazily at the first recording,
-        # so an env that ships no render adapter would otherwise surface only
-        # once the cadence first came due.
-        require_renderable(str(cfg.environments.get(ENV_NAME_KEY, DEFAULT_ENV_NAME)))
+    if val_enabled and int(val_conf.video_episodes) > 0:
+        # The renderer is built lazily at the first round, so an env that
+        # ships no render adapter would otherwise surface only once the
+        # cadence first came due. A dock-less env schedules no rounds at all
+        # (see the registration below), so it owes no renderer either; a
+        # from_dataset group carries no dock key at this point and is checked
+        # as if docking, matching the default its config resolves to.
+        dock_conf = cfg.environments.get("dock")
+        if dock_conf is None or bool(dock_conf.get("enabled", True)):
+            require_renderable(str(cfg.environments.get(ENV_NAME_KEY, DEFAULT_ENV_NAME)))
 
     # Only meaningful for the run this function owns; an external run's id is
     # the agent's business, and recording it here would invite a resume to
@@ -297,13 +307,25 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
             save_vecnormalize=True,
         )
     ]
-    if cfg.video.enabled:
-        callbacks.append(VideoEvalCallback(
-            env_conf=env_conf,
-            every_steps=cfg.video.every_steps,
-            max_frames=cfg.video.max_frames,
-            seed=cfg.seed + 10_000,  # never the training seeds
-        ))
+    if val_enabled:
+        if task_cfg.dock.enabled:
+            callbacks.append(ValEpisodeCallback(
+                run_dir=run_dir,
+                env_name=env_name_of(task_cfg),
+                seed=cfg.seed + 10_000,  # never the training seeds
+                episodes=int(val_conf.episodes),
+                video_episodes=int(val_conf.video_episodes),
+                every_steps=int(val_conf.every_steps),
+                max_frames=int(val_conf.max_frames),
+            ))
+        else:
+            # Not an error: val.enabled defaults on, and a deliberately
+            # dock-less env is a legitimate thing to train on -- it just has
+            # no dock trajectory for these episodes to measure.
+            print(
+                "[val] env has dock.enabled=false; validation episodes "
+                "measure the dock task, so none are scheduled"
+            )
     callbacks.extend(extra_callbacks)
 
     # rl.total_timesteps is the run's total budget, but SB3 adds the restored

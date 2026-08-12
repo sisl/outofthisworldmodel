@@ -28,7 +28,9 @@ def test_root_config_composes(rl):
     assert cfg.environments.dt == 0.05
     assert cfg.rl.algo == rl.removesuffix("_tuned")
     assert cfg.rl.checkpoint.save_freq > 0
-    assert cfg.video.enabled is False
+    assert cfg.val.enabled is True
+    assert cfg.val.every_steps > 0
+    assert 0 <= cfg.val.video_episodes <= cfg.val.episodes
 
 
 @pytest.mark.parametrize("rl", ["ppo_tuned", "sac_tuned"])

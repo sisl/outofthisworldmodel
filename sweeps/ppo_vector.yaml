@@ -1,4 +1,6 @@
-# wandb Bayesian sweep over PPO on the ISS docking env, vector observations.
+# wandb Bayesian sweep over PPO on the iss-numerical docking env
+# (sweep_trial's default environments=iss_numerical_ports), vector
+# observations.
 #
 #   just sweep-init ppo_vector          # prints the sweep id
 #   just sweep-agent <id> ppo_vector    # one agent, CPU only

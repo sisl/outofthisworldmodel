@@ -102,7 +102,7 @@ def test_trial_config_forces_the_settings_a_sweep_cannot_choose(tmp_path: Path):
     assert cfg.run_dir == str(run_dir)
     assert cfg.external_wandb is True
     assert cfg.hub.upload is False
-    assert cfg.video.enabled is False
+    assert cfg.val.enabled is False
     assert cfg.rl.n_envs == 8
     assert cfg.rl.vec == "subproc"
     assert cfg.rl.device == "cpu"
