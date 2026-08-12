@@ -6,6 +6,13 @@ set dotenv-load
 # pygfx reads the variable and picks the first match.
 export PYGFX_WGPU_ADAPTER_NAME := "RTX PRO 6000"
 
+# CUDA's default enumeration is fastest-first by compute capability, which on
+# this machine puts the Blackwell RTX cards at CUDA indices 0/1 and the H100s
+# at 2/3 -- the reverse of nvidia-smi's PCI order that every GPU number in
+# this file (and in people's heads) refers to. Pin PCI order so
+# CUDA_VISIBLE_DEVICES=2 means the GPU nvidia-smi calls 2.
+export CUDA_DEVICE_ORDER := "PCI_BUS_ID"
+
 # Launch a fresh PPO / SAC training run (extra hydra overrides pass through)
 train-ppo *ARGS:
     uv run python -m owm.baselines.rl.train rl=ppo {{ARGS}}
