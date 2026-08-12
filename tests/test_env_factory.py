@@ -27,7 +27,7 @@ def test_env_config_matches_preset_values():
     assert cfg.observation.goal_error is True
     assert cfg.sensor_noise.enabled is True
     assert cfg.sensor_noise.sigma_pos_m == 0.05
-    assert cfg.reward_weights.collision == -1_000_000.0
+    assert cfg.reward_weights.collision == -50_000.0
 
 
 def test_make_env_shapes_and_check():
