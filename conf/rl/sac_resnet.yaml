@@ -1,8 +1,10 @@
 # SAC on the pixel observation: the 27-wide vector with a frozen ResNet-18
 # embedding of the rendered frame concatenated onto it.
 #
-#   uv run python -m owm.baselines.rl.train rl=sac_resnet \
+#   just train-sac rl=sac_resnet \
 #     environments=iss_numerical_ports_render224 val.enabled=false
+#
+# Through `just` for the environment the recipes export; see ppo_resnet.yaml.
 #
 # NOT a frozen sweep winner, for the same reason ppo_resnet.yaml is not: the
 # pixel sweeps have not been run, so this inherits sac_tuned's hyperparameters
@@ -18,7 +20,15 @@ obs: vector_resnet
 # a Vulkan device worth ~1.9 GB. See ppo_resnet.yaml.
 n_envs: 4
 
-total_timesteps: 2000000
+total_timesteps: 5000000
+
+# Half a million, not sac_tuned's 100k. A SAC checkpoint carries its replay
+# buffer, and the buffer is sized by the observation: 1e6 transitions of a
+# 539-wide observation is 4.35 GB per checkpoint against 0.25 GB at the vector
+# width. Ten checkpoints over the budget above costs ~44 GB, and the worst a
+# crash can cost is the ~3.6 hours of stepping since the last one.
+checkpoint:
+  save_freq: 500000
 
 hyperparams:
   # Back to the sweep winner's own value. sac_tuned raised gradient_steps to 4

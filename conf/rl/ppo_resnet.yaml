@@ -1,8 +1,13 @@
 # PPO on the pixel observation: the 27-wide vector with a frozen ResNet-18
 # embedding of the rendered frame concatenated onto it.
 #
-#   uv run python -m owm.baselines.rl.train rl=ppo_resnet \
+#   just train-ppo rl=ppo_resnet \
 #     environments=iss_numerical_ports_render224 val.enabled=false
+#
+# Through `just`, not a bare `uv run`: the recipes export JAX_PLATFORMS=cpu and
+# PYGFX_WGPU_ADAPTER_NAME, and this mode needs both. Without the first, XLA
+# pre-claims ~75% of every visible card -- 61 GB of an 80 GB one -- and the
+# render contexts n_envs is budgeted against have nowhere to land.
 #
 # NOT a frozen sweep winner. docs/baselines.md's winner-freezing convention
 # covers ppo_tuned.yaml / sac_tuned.yaml; the pixel sweeps (sweeps/ppo_resnet
@@ -22,10 +27,10 @@ obs: vector_resnet
 n_envs: 4
 
 # Pixel steps cost far more than vector ones -- each is a render plus a
-# ResNet forward -- so the budget is cut with the throughput rather than held
-# at the vector runs' 10M. The pixel sweep specs make the same trade, at 100k
-# trial steps against the vector specs' 500k.
-total_timesteps: 2000000
+# ResNet forward -- so the budget sits below the vector runs' 10M. Measured at
+# 38 steps/s on an A100 box (4 workers rendering on one card, each embedding
+# single-threaded on CPU), 5M is roughly 36 hours of wall clock per run.
+total_timesteps: 5000000
 
 hyperparams:
   # 2048 * 4 envs = the 8192-transition rollout ppo_tuned holds at 256 * 32,
