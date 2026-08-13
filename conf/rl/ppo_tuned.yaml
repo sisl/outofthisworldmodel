@@ -15,12 +15,21 @@
 # ONE DELIBERATE DEVIATION FROM THE TRIAL. The winning trial ran n_envs 8 with
 # n_steps 1024; this config runs n_envs 32 with n_steps 256. PPO's rollout is
 # n_steps * n_envs, so both are 8192 transitions per update, and with
-# batch_size 1024 both give 8 minibatches over 5 epochs -- the update the
-# trial was tuned at, unchanged. What changes is that the rollout is gathered
-# from 32 environments instead of 8, which decorrelates it, and that the env
-# stepping runs ~3x faster on this 128-core box. n_steps here is therefore NOT
-# the swept value read literally; the swept value is 1024 at n_envs 8, and the
-# pair has to move together.
+# batch_size 1024 both give 8 minibatches over 5 epochs. The rollout is also
+# gathered from 32 environments instead of 8, which decorrelates it, and the
+# env stepping runs ~3x faster on this 128-core box. n_steps here is therefore
+# NOT the swept value read literally; the swept value is 1024 at n_envs 8, and
+# the pair has to move together.
+#
+# NOT quite identical, though. GAE runs per environment over each env's own
+# slice of the rollout, so this config estimates advantages over 32 segments
+# of 256 steps where the trial used 8 of 1024, and every segment boundary
+# bootstraps off the value function rather than continuing the trace. At the
+# tuned gamma 0.9995 and gae_lambda 0.9288 the trace decays with a ~14-step
+# effective horizon, so the truncation touches ~5.5% of samples here against
+# ~1.4% at the trial's shape. Small, and the direction is more value-function
+# bias rather than less, but it is a real difference: the sample budget and
+# the minibatch structure carry over exactly, the advantage estimator does not.
 #
 # CAVEAT ON THE OBJECTIVE. No trial in this sweep docked, and none beat a
 # zero-thrust policy, which scores -4,642 on the same eval seeds
