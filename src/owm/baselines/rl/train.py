@@ -343,6 +343,36 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
             )
     callbacks.extend(extra_callbacks)
 
+    # Demonstrations, if this run asked for them. Only on a fresh launch: a
+    # resume already carries the buffer its earlier legs filled, and adding
+    # the same episodes again would count them twice.
+    demo_conf = cfg.rl.get("demo")
+    if demo_conf and demo_conf.get("repo_id") and source is None:
+        if not hasattr(model, "replay_buffer"):
+            raise SystemExit(
+                f"rl.demo.repo_id is set but rl={cfg.rl.algo} is on-policy and has "
+                "no replay buffer to seed; demonstrations need an off-policy "
+                "algorithm (rl=sac)"
+            )
+        # Imported here, not at the top: reading the hub's parquet shards pulls
+        # in pyarrow and downloads a dataset, and a run without rl.demo set
+        # should do neither.
+        from owm.baselines.rl.demo_buffer import load_demo_transitions, seed_replay_buffer
+
+        demos = load_demo_transitions(
+            repo_id=str(demo_conf["repo_id"]),
+            cfg=task_cfg,
+            env_name=str(cfg.environments.get(ENV_NAME_KEY, DEFAULT_ENV_NAME)),
+            revision=demo_conf.get("revision"),
+            split=str(demo_conf.get("split", "train")),
+            policies=(tuple(demo_conf["policies"]) if demo_conf.get("policies") else None),
+            successful_only=bool(demo_conf.get("successful_only", False)),
+            max_transitions=demo_conf.get("max_transitions"),
+        )
+        summary = seed_replay_buffer(model, venv, demos)
+        print(f"[demo] seeded replay buffer: {summary}")
+        wandb.log(summary)
+
     # rl.total_timesteps is the run's total budget, but SB3 adds the restored
     # counter to whatever it is given when reset_num_timesteps=False, so a
     # resumed leg must ask only for the steps still outstanding.

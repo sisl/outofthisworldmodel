@@ -20,6 +20,8 @@ dependencies = [
     "matplotlib>=3.8",
     "torchvision>=0.20",
     "click>=8.1",
+    # Reads the hub datasets' parquet shards for rl.demo (demo_buffer.py).
+    "pyarrow>=15.0",
 ]
 
 [tool.uv.sources]

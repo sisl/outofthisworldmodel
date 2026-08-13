@@ -21,6 +21,19 @@ obs_resnet:          # read only when obs=vector_resnet
 norm_reward: false
 checkpoint:
   save_freq: 100000
+# Pre-flown trajectories to seed the replay buffer with before the first
+# gradient step, so the critic has successful episodes to regress against
+# rather than waiting for exploration to find one. Off by default: repo_id
+# null means the dataset is neither downloaded nor read. Rewards are always
+# RECOMPUTED under this run's own reward_weights, so a dataset flown under
+# other weights still serves (see demo_buffer.py).
+demo:
+  repo_id: null            # e.g. sislaboratory/owm-iss-numerical-v1-coop-goal-dt50ms-500k
+  revision: null           # branch/tag/sha; null tracks the default branch
+  split: train
+  policies: null           # null = every generating policy; e.g. [0, 2] for the dock ones
+  successful_only: false   # keep only episodes that end inside THIS run's dock gate
+  max_transitions: null    # null = the whole split, subject to buffer_size
 hyperparams:
   buffer_size: 1000000
   batch_size: 256
