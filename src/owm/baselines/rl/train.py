@@ -294,6 +294,17 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
             gamma=cfg.rl.hyperparams.gamma,
         )
 
+    # A protected demo fraction needs its own buffer class, chosen before the
+    # model is built; the demonstrations are loaded into it further down.
+    demo_conf = cfg.rl.get("demo")
+    demo_fraction = float(demo_conf.get("protected_fraction", 0.0)) if demo_conf else 0.0
+    extra_algo_kwargs: dict = {}
+    if demo_fraction > 0.0 and demo_conf and demo_conf.get("repo_id"):
+        from owm.baselines.rl.demo_mix import DemoMixReplayBuffer
+
+        extra_algo_kwargs["replay_buffer_class"] = DemoMixReplayBuffer
+        extra_algo_kwargs["replay_buffer_kwargs"] = {"demo_fraction": demo_fraction}
+
     algo_cls = ALGOS[cfg.rl.algo]
     if source is not None:
         model = algo_cls.load(
@@ -308,6 +319,7 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
             seed=cfg.seed,
             device=cfg.rl.device,
             tensorboard_log=str(run_dir / "tb"),
+            **extra_algo_kwargs,
             **OmegaConf.to_container(cfg.rl.hyperparams, resolve=True),
         )
 
@@ -346,7 +358,6 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
     # Demonstrations, if this run asked for them. Only on a fresh launch: a
     # resume already carries the buffer its earlier legs filled, and adding
     # the same episodes again would count them twice.
-    demo_conf = cfg.rl.get("demo")
     if demo_conf and demo_conf.get("repo_id") and source is None:
         if not hasattr(model, "replay_buffer"):
             raise SystemExit(
@@ -370,6 +381,21 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
             max_transitions=demo_conf.get("max_transitions"),
         )
         summary = seed_replay_buffer(model, venv, demos)
+        # The same observations the buffer holds: normalized once, reused by
+        # the protected store and by behaviour cloning so all three agree.
+        demo_obs, demo_next = demos.obs, demos.next_obs
+        if venv is not None and getattr(venv, "obs_rms", None) is not None:
+            demo_obs = venv.normalize_obs(demos.obs).astype("float32")
+            demo_next = venv.normalize_obs(demos.next_obs).astype("float32")
+        if demo_fraction > 0.0:
+            n = model.replay_buffer.load_demos(demos, demo_obs, demo_next)
+            summary["demo/protected_fraction"] = demo_fraction
+            summary["demo/protected_transitions"] = float(n)
+        bc_steps = int(demo_conf.get("bc_steps", 0) or 0)
+        if bc_steps > 0:
+            from owm.baselines.rl.demo_mix import behaviour_clone
+
+            summary.update(behaviour_clone(model, demo_obs, demos.action, bc_steps))
         print(f"[demo] seeded replay buffer: {summary}")
         wandb.log(summary)
 

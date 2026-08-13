@@ -34,6 +34,12 @@ demo:
   policies: null           # null = every generating policy; e.g. [0, 2] for the dock ones
   successful_only: false   # keep only episodes that end inside THIS run's dock gate
   max_transitions: null    # null = the whole split, subject to buffer_size
+  # Share of every sampled batch drawn from a demo store training never
+  # overwrites. 0 keeps the plain seeded buffer, whose demo share decays.
+  protected_fraction: 0.0
+  # Gradient steps regressing the actor onto the demonstrators' actions
+  # before RL starts. 0 leaves the actor at its initialisation.
+  bc_steps: 0
 hyperparams:
   buffer_size: 1000000
   batch_size: 256
