@@ -1,0 +1,48 @@
+# SAC on the pixel observation: the 27-wide vector with a frozen ResNet-18
+# embedding of the rendered frame concatenated onto it.
+#
+#   just train-sac rl=sac_resnet \
+#     environments=iss_numerical_ports_render224 val.enabled=false
+#
+# Through `just` for the environment the recipes export; see ppo_resnet.yaml.
+#
+# NOT a frozen sweep winner, for the same reason ppo_resnet.yaml is not: the
+# pixel sweeps have not been run, so this inherits sac_tuned's hyperparameters
+# as the best available starting point and changes only what the observation
+# change forces. Read any result from it as untuned-for-pixels.
+defaults:
+  - sac_tuned
+  - _self_
+
+obs: vector_resnet
+
+# Eight, not sac_tuned's 16 -- every worker renders, and a render context takes
+# a Vulkan device worth ~1.85 GB. See ppo_resnet.yaml for the budget.
+n_envs: 8
+
+# The embedding follows the learner rather than defaulting to the workers'
+# CPUs; see ppo_resnet.yaml for what it is worth and what it costs.
+obs_resnet:
+  device: ${rl.device}
+
+total_timesteps: 5000000
+
+# Half a million, not sac_tuned's 100k. A SAC checkpoint carries its replay
+# buffer, and the buffer is sized by the observation: 1e6 transitions of a
+# 539-wide observation is 4.35 GB per checkpoint against 0.25 GB at the vector
+# width. Ten checkpoints over the budget above costs ~44 GB, and the worst a
+# crash can cost is the ~3.6 hours of stepping since the last one.
+checkpoint:
+  save_freq: 500000
+
+hyperparams:
+  # Two, holding the one-update-per-32-transitions ratio the winning trial was
+  # tuned at. With train_freq 8, SAC takes one gradient step per train_freq *
+  # n_envs transitions, so gradient_steps has to move with n_envs: the trial
+  # ran 1 at n_envs 4, sac_tuned runs 4 at n_envs 16, and this is the same
+  # ratio at n_envs 8.
+  gradient_steps: 2
+  policy_kwargs:
+    # 256, not sac_tuned's 64: vector_resnet makes the observation 539 wide
+    # rather than 27. See ppo_resnet.yaml.
+    net_arch: [256, 256]

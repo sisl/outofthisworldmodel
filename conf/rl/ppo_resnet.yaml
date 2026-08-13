@@ -1,0 +1,61 @@
+# PPO on the pixel observation: the 27-wide vector with a frozen ResNet-18
+# embedding of the rendered frame concatenated onto it.
+#
+#   just train-ppo rl=ppo_resnet \
+#     environments=iss_numerical_ports_render224 val.enabled=false
+#
+# Through `just`, not a bare `uv run`: the recipes export JAX_PLATFORMS=cpu and
+# PYGFX_WGPU_ADAPTER_NAME, and this mode needs both. Without the first, XLA
+# pre-claims ~75% of every visible card -- 61 GB of an 80 GB one -- and the
+# render contexts n_envs is budgeted against have nowhere to land.
+#
+# NOT a frozen sweep winner. docs/baselines.md's winner-freezing convention
+# covers ppo_tuned.yaml / sac_tuned.yaml; the pixel sweeps (sweeps/ppo_resnet
+# .yaml) have not been run, so there is no pixel winner to freeze. This
+# inherits ppo_tuned's hyperparameters as the best available starting point
+# and changes only what the observation change forces. Read any result from
+# it as untuned-for-pixels, and do not report it as a tuned baseline.
+defaults:
+  - ppo_tuned
+  - _self_
+
+obs: vector_resnet
+
+# Eight, not ppo_tuned's 32. Every worker renders, and a render context takes a
+# Vulkan device worth ~1.85 GB (measured, linear in the worker count), so the
+# env count is a GPU budget here rather than a CPU one. Eight is 15.4 GB, which
+# leaves four concurrent runs inside one 80 GB card at 62 GB; sixteen would be
+# 30.7 GB each and only two would fit.
+n_envs: 8
+
+# The embedding follows the learner rather than defaulting to the workers'
+# CPUs. A ResNet-18 forward per env per step is what bounds this mode's
+# throughput, and single-threaded on CPU it costs more than the render it
+# reads: moving it onto the learner's GPU measured 2.3x on its own, more than
+# doubling the worker count buys. The cost is a CUDA context per worker, a few
+# hundred MB each, which is affordable whenever the learner is on a GPU of its
+# own. Resolves to cpu when rl.device is cpu, which is the old behaviour.
+obs_resnet:
+  device: ${rl.device}
+
+# Pixel steps cost far more than vector ones -- each is a render plus a ResNet
+# forward -- so the budget sits below the vector runs' 10M. Measured at 106
+# steps/s with four such runs sharing the pair of cards, 5M is roughly 13 hours
+# of wall clock per run.
+total_timesteps: 5000000
+
+hyperparams:
+  # 1024 * 8 envs = the 8192-transition rollout ppo_tuned holds at 256 * 32,
+  # which is the rollout the vector winner was tuned at. n_steps and n_envs
+  # have to move together, per ppo_tuned's header -- and this pair is the
+  # winning trial's own shape read literally, so the advantage estimator
+  # matches it too rather than splitting the trace into shorter segments.
+  n_steps: 1024
+  policy_kwargs:
+    # 256, not ppo_tuned's 64. The sweep preferred [64, 64] on a 27-wide
+    # observation; vector_resnet concatenates ResNet-18's 512-d avgpool
+    # feature onto that, so the policy reads 539 values and a 64-unit first
+    # layer would compress them 8.4x before anything is learned from them.
+    # 256 makes it 2.1x. This is a consequence of the observation change, not
+    # a sweep result -- the pixel sweep is what would settle it.
+    net_arch: [256, 256]

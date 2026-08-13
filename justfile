@@ -4,7 +4,17 @@ set dotenv-load
 # renderer lands on GPU 0 -- an H100 another tenant is using. The RTX PRO
 # 6000s (GPUs 2/3) are ours, and are the only adapters matching this name;
 # pygfx reads the variable and picks the first match.
-export PYGFX_WGPU_ADAPTER_NAME := "RTX PRO 6000"
+#
+# The default names THIS host's cards, so it is wrong on any other one, and a
+# plain `export X := "..."` in just is unconditional -- it overwrites the
+# caller's environment rather than deferring to it, so `PYGFX_WGPU_ADAPTER_NAME
+# =... just train-ppo` would silently keep the default and fail with "Adapter
+# with name 'RTX PRO 6000' not found". env_var_or_default defers instead. List
+# a host's adapters with:
+#
+#   uv run python -c "import wgpu; [print(a.info['device']) for a in \
+#       wgpu.gpu.enumerate_adapters_sync()]"
+export PYGFX_WGPU_ADAPTER_NAME := env_var_or_default("PYGFX_WGPU_ADAPTER_NAME", "RTX PRO 6000")
 
 # CUDA's default enumeration is fastest-first by compute capability, which on
 # this machine puts the Blackwell RTX cards at CUDA indices 0/1 and the H100s
