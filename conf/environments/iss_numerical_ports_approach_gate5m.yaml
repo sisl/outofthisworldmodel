@@ -1,0 +1,46 @@
+# iss_numerical_ports_approach with the dock gate opened to 5 m -- the first
+# stage of a gate curriculum, and a diagnostic before it is one.
+#
+#   just train-ppo rl=ppo_tuned \
+#     environments=iss_numerical_ports_approach_gate5m
+#
+# WHY. Nothing has docked: 65 sweep trials, a 3M-step run, and four 10M runs
+# stopped near half budget, with zero successes and no closure trend in any of
+# them. Two obstacles were measured and one was fixed. The reward's local
+# gradient was fixed -- iss_numerical_ports_approach cuts the commitment an
+# approach must sustain before it profits from ~326 steps to ~45 -- and it
+# changed behaviour without producing a dock, so it was real and not the
+# binding constraint.
+#
+# The one left is discovery. Success needs a four-way conjunction: within
+# 0.1 m of the port, under 0.5 m/s, inside 5 deg, under 0.0087 rad/s, reached
+# from a 100-500 m start inside 7200 steps. Undirected Gaussian exploration
+# will not stumble into that volume, so dock_success is never collected and
+# the +10,000 term never enters what the policy learns from, whatever its
+# size. A policy cannot be shaped toward a reward it has not once received.
+#
+# The obvious lever -- start nearer the port -- is not available in config.
+# orbit.start_radius_range_m draws a UNIFORM DIRECTION on a shell centred on
+# the ISS origin, and the station's collision boxes reach 102.4 m from that
+# origin, which is what sets the existing 100 m floor. Starting closer means
+# starting inside the hull. A port-biased start distribution would need an
+# owm-envs change; opening the gate does not.
+#
+# WHAT THIS IS NOT. A 5 m dock is not a dock -- the flight requirement is
+# 0.1 m, and a policy trained here is not a docking baseline. This exists to
+# answer whether ANY success is reachable, and to give a curriculum something
+# to tighten from once it is. If nothing docks even at 5 m, the problem is not
+# exploration volume and the next change should not be another gate.
+#
+# The other three criteria open with it, proportionally: a position gate alone
+# still leaves the conjunction, and the rate gate in particular is tighter
+# against exploration noise than the position one.
+defaults:
+  - iss_numerical_ports_approach
+  - _self_
+
+dock:
+  max_distance_m: 5.0
+  max_velocity_m_s: 1.0
+  max_attitude_error_deg: 20.0
+  max_body_rate_rad_s: 0.05
