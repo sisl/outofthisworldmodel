@@ -2,19 +2,37 @@
 # winner-freezing convention. hyperparams below are the winning trial's
 # config verbatim; everything else matches conf/rl/ppo.yaml.
 #
-#   sweep h4be1smz:
-#   https://wandb.ai/duncan-world-models/amos-out-of-this-world-model/sweeps/h4be1smz
-#   winning run daidgg4p:
-#   https://wandb.ai/duncan-world-models/amos-out-of-this-world-model/runs/daidgg4p
-#   objective (sweep/final_mean_return): -762710728.3547363
-#   frozen: 2026-08-08
+#   sweep 2gpo2vfy:
+#   https://wandb.ai/duncan-world-models/amos-out-of-this-world-model/sweeps/2gpo2vfy
+#   winning run daily-sweep-29 (1gh96v8h):
+#   https://wandb.ai/duncan-world-models/amos-out-of-this-world-model/runs/1gh96v8h
+#   objective (sweep/final_mean_return): -4967.479248046875
+#   frozen: 2026-08-13
 #
-# The winner was tuned at 500k steps on iss_coop_goal_ports; total_timesteps
+# The winner was tuned at 500k steps on iss_numerical_ports; total_timesteps
 # below is the full production budget, not the trial's horizon.
+#
+# ONE DELIBERATE DEVIATION FROM THE TRIAL. The winning trial ran n_envs 8 with
+# n_steps 1024; this config runs n_envs 32 with n_steps 256. PPO's rollout is
+# n_steps * n_envs, so both are 8192 transitions per update, and with
+# batch_size 1024 both give 8 minibatches over 5 epochs -- the update the
+# trial was tuned at, unchanged. What changes is that the rollout is gathered
+# from 32 environments instead of 8, which decorrelates it, and that the env
+# stepping runs ~3x faster on this 128-core box. n_steps here is therefore NOT
+# the swept value read literally; the swept value is 1024 at n_envs 8, and the
+# pair has to move together.
+#
+# CAVEAT ON THE OBJECTIVE. No trial in this sweep docked, and none beat a
+# zero-thrust policy, which scores -4,642 on the same eval seeds
+# (pocs/null_action_baseline.py). The objective therefore ranked trials by how
+# reliably they stay put rather than by any progress toward the port, and this
+# winner is the most reliably passive of 36 rather than the best docking
+# policy. It is the correct frozen artefact for the sweep that produced it;
+# it is not evidence that the task is being learned.
 algo: ppo
-n_envs: 8
+n_envs: 32          # with n_steps 256 this holds the trial's 8192 rollout
 vec: subproc
-total_timesteps: 5000000
+total_timesteps: 10000000
 device: cpu          # SB3 PPO+MlpPolicy is faster on CPU
 # vector: the 25-dim state alone. vector_resnet: that vector with a frozen
 # pretrained ResNet's embedding of the rendered frame concatenated onto it,
@@ -35,11 +53,13 @@ norm_reward: false
 checkpoint:
   save_freq: 100000  # total env steps between checkpoints
 hyperparams:
-  n_steps: 512
+  n_steps: 256       # trial value was 1024 at n_envs 8; see header
   batch_size: 1024
-  learning_rate: 1.070945302600948e-05
-  gamma: 0.995
-  gae_lambda: 0.943622263296522
-  ent_coef: 0.0014316171954262189
+  learning_rate: 2.7994785472181424e-05
+  gamma: 0.9995
+  gae_lambda: 0.9288495230098892
+  ent_coef: 0.0001467721015752794
   clip_range: 0.3
-  n_epochs: 20
+  n_epochs: 5
+  policy_kwargs:
+    net_arch: [64, 64]

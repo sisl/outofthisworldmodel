@@ -145,14 +145,29 @@ just train-sac rl=sac_tuned environments=iss_numerical_ports
 configs — any reported final baseline number should trace back to a run
 launched from one of them, not from a sweep trial or the untuned defaults.
 
-**Status.** Winners were frozen for both vector sweeps (`ppo_vector` sweep
-`h4be1smz`, `sac_vector` sweep `a5kxxtk2`) as of 2026-08-08, but those
-trials ran on the `iss` env under the pre-reshape reward — the frozen
-`*_tuned.yaml` configs predate both the `iss-numerical` retarget and the
-reward reshape, so the vector sweeps are being rerun against
-`iss_numerical_ports` before any new baseline launches from them. The pixel
-sweeps (`ppo_resnet`, `sac_resnet`) are deferred until the vector winners
-are refrozen.
+**Status.** The vector sweeps were rerun against `iss_numerical_ports` and
+both winners were refrozen on 2026-08-13: `ppo_vector` sweep `2gpo2vfy`
+(winner `daily-sweep-29`, −4,967 over 36 trials) and `sac_vector` sweep
+`rnuijnos` (winner `vague-sweep-21`, −9,257 over 29 trials). These replace
+the 2026-08-08 freezes from `h4be1smz` / `a5kxxtk2`, which predated both the
+`iss-numerical` retarget and the reward reshape. The pixel sweeps
+(`ppo_resnet`, `sac_resnet`) remain deferred.
+
+**Read the objective with care.** Neither sweep produced a docking policy:
+`sweep/final_success` is 0 for every trial in both, closest approach never
+fell below the episode's own start range, and no trial beat a zero-thrust
+policy, which scores −4,642 on the same eval seeds
+(`pocs/null_action_baseline.py`). The only behaviour that varied across
+trials was how far a policy drifted toward the 750 m escape boundary, so the
+objective ranked configs by reliable passivity. The frozen winners are
+correct records of their sweeps and the wrong thing to read as tuned docking
+baselines.
+
+`environments=iss_numerical_ports_approach` carries a reward reweighting
+aimed at that failure — weight shifted from the velocity term to the
+position term, and a softened collision penalty — so an approach becomes
+locally profitable within ~45 steps instead of ~326
+(`pocs/reward_gradient.py`).
 
 ## Telemetry
 

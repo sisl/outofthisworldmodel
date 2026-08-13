@@ -1,0 +1,43 @@
+# iss_numerical_ports with the reward reweighted to make approaching learnable.
+#
+#   uv run python -m owm.baselines.rl.train rl=ppo_tuned \
+#     environments=iss_numerical_ports_approach
+#
+# Only reward_weights differ; the dynamics, ports, perturbations, observation
+# and dock gate are the base config's, so a run here is comparable to one on
+# iss_numerical_ports state for state.
+#
+# WHY THESE WEIGHTS. Every trial to date converges to doing nothing, and the
+# reason is local rather than aggregate: closing the range is already worth
+# thousands of reward over holding station (pocs/reward_gradient.py), but the
+# FIRST step of it is not. Moving pays the velocity term immediately and earns
+# the position term back only as range falls, so at the base weights a 1 m/s
+# commitment has to persist ~326 steps -- 16 seconds -- before it turns a
+# profit. Per-step Gaussian exploration is uncorrelated across steps and never
+# sustains a direction that long, so the policy never sees the payoff.
+#
+# Shifting weight from velocity to position cuts that to ~45 steps (2.3 s),
+# which is inside what undirected exploration actually produces. The four
+# shaped weights still sum to 1, so the pseudo-Huber normalisation the reward
+# module documents is preserved.
+#
+# The collision term is softened for the same reason: the approach corridor
+# runs past the station hull, a naive straight-in approach hits it (3 of 5
+# episodes in pocs/scripted_approach.py), and -50,000 teaches "stop moving"
+# well before it teaches "go around". At -10,000 a collision is still clearly
+# worse than holding station -- a passive rollout costs ~-7,800 at these
+# weights -- so the ordering that makes collisions worth avoiding survives,
+# with a thinner margin than the base config's.
+#
+# dock_success is left at the base value on purpose: raising a reward the
+# policy has never once collected changes nothing about what it learns from.
+defaults:
+  - iss_numerical_ports
+  - _self_
+
+reward_weights:
+  position: -0.9
+  velocity: -0.05
+  attitude: -0.03
+  body_rate: -0.02
+  collision: -10000.0
