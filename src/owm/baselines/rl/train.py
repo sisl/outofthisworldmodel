@@ -220,6 +220,9 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
             mode=cfg.logging.mode,
             name=run_dir.name,
             dir=str(run_dir),
+            # .get, not attribute access: a run started before logging.tags
+            # existed resumes from a saved config with no such key.
+            tags=list(cfg.logging.get("tags") or ()),
             config=OmegaConf.to_container(cfg, resolve=True),
             sync_tensorboard=True,  # SB3 writes losses to TB; wandb mirrors them
         )

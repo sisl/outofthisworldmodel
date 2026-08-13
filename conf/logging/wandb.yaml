@@ -1,3 +1,7 @@
 entity: ${oc.env:WANDB_ENTITY,null}
 project: ${oc.env:WANDB_PROJECT,owm}
 mode: ${oc.env:WANDB_MODE,online}
+# Free-form labels for grouping runs in the wandb UI, e.g.
+# logging.tags=[ppo,reward_approach]. Empty by default: a run that names
+# nothing is not mislabelled.
+tags: []
