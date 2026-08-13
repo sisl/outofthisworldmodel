@@ -16,9 +16,14 @@ defaults:
 
 obs: vector_resnet
 
-# Four, not sac_tuned's 16 -- every worker renders, and a render context takes
-# a Vulkan device worth ~1.9 GB. See ppo_resnet.yaml.
-n_envs: 4
+# Eight, not sac_tuned's 16 -- every worker renders, and a render context takes
+# a Vulkan device worth ~1.85 GB. See ppo_resnet.yaml for the budget.
+n_envs: 8
+
+# The embedding follows the learner rather than defaulting to the workers'
+# CPUs; see ppo_resnet.yaml for what it is worth and what it costs.
+obs_resnet:
+  device: ${rl.device}
 
 total_timesteps: 5000000
 
@@ -31,11 +36,12 @@ checkpoint:
   save_freq: 500000
 
 hyperparams:
-  # Back to the sweep winner's own value. sac_tuned raised gradient_steps to 4
-  # to hold one update per 32 transitions at n_envs 16; at n_envs 4 the
-  # winning trial's own pairing -- train_freq 8, gradient_steps 1 -- is that
-  # same ratio, so this is the literal swept value rather than a rescaling.
-  gradient_steps: 1
+  # Two, holding the one-update-per-32-transitions ratio the winning trial was
+  # tuned at. With train_freq 8, SAC takes one gradient step per train_freq *
+  # n_envs transitions, so gradient_steps has to move with n_envs: the trial
+  # ran 1 at n_envs 4, sac_tuned runs 4 at n_envs 16, and this is the same
+  # ratio at n_envs 8.
+  gradient_steps: 2
   policy_kwargs:
     # 256, not sac_tuned's 64: vector_resnet makes the observation 539 wide
     # rather than 27. See ppo_resnet.yaml.
