@@ -165,7 +165,8 @@ baselines.
 
 `environments=iss_numerical_ports_approach` carries a reward reweighting
 aimed at that failure — weight shifted from the velocity term to the
-position term, and a softened collision penalty — so an approach becomes
+position term, and a collision penalty softened as far as
+`RewardWeights`' coin-flip invariant allows — so an approach becomes
 locally profitable within ~45 steps instead of ~326
 (`pocs/reward_gradient.py`).
 
