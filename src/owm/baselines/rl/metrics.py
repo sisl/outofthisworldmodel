@@ -98,15 +98,19 @@ class DockingMetricsCallback(BaseCallback):
                     "docking/ep_min_att_rad": mins["att_rad"],
                     "docking/ep_min_rate_radps": mins["rate_radps"],
                     "docking/ep_start_pos_m": start,
-                    # The approach signal ep_min_pos_m cannot carry on its own.
-                    # Episodes start uniformly over a 100-500 m shell, whose
-                    # 115 m standard deviation is the whole spread seen in
-                    # ep_min_pos_m -- so that series plots where an episode
-                    # BEGAN, and a policy learning to close would not move it.
-                    # Dividing by the start range takes that out: 1.0 is a
-                    # policy that never got closer than it started, and 0 is
-                    # one that reached the port.
-                    "docking/ep_closure_frac": mins["pos_m"] / start,
+                    # ep_min_pos_m as a fraction of the range the episode
+                    # opened at -- the approach signal it cannot carry on its
+                    # own. Episodes start uniformly over a 100-500 m shell,
+                    # whose 115 m standard deviation is the whole spread seen
+                    # in ep_min_pos_m, so that series plots where an episode
+                    # BEGAN and a policy learning to close would not move it.
+                    # Dividing by the start range takes that out.
+                    #
+                    # Range REMAINING, not range closed, so it falls as the
+                    # policy improves exactly as its ep_min_* siblings do: 1.0
+                    # is a policy that never got closer than it started, and 0
+                    # is one that reached the port.
+                    "docking/ep_min_pos_frac": mins["pos_m"] / start,
                 }
                 if "dock_port" in info:
                     payload["docking/port_index"] = info["dock_port_index"]

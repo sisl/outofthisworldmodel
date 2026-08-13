@@ -127,7 +127,7 @@ def test_disables_itself_when_goal_error_true_is_missing(logged, capsys):
     assert logged == []
 
 
-def test_closure_frac_divides_closest_approach_by_the_start_range(logged):
+def test_min_pos_frac_divides_closest_approach_by_the_start_range(logged):
     callback = DockingMetricsCallback(window=100)
     callback._on_training_start()
 
@@ -138,17 +138,17 @@ def test_closure_frac_divides_closest_approach_by_the_start_range(logged):
 
     assert logged[0]["docking/ep_start_pos_m"] == 400.0
     assert logged[0]["docking/ep_min_pos_m"] == 100.0
-    assert logged[0]["docking/ep_closure_frac"] == pytest.approx(0.25)
+    assert logged[0]["docking/ep_min_pos_frac"] == pytest.approx(0.25)
 
 
-def test_closure_frac_is_one_when_the_policy_never_closes(logged):
+def test_min_pos_frac_is_one_when_the_policy_never_closes(logged):
     callback = DockingMetricsCallback(window=100)
     callback._on_training_start()
 
     _step(callback, [_info(pos_m=300.0)], [False])
     _step(callback, [_info(pos_m=450.0)], [True])
 
-    assert logged[0]["docking/ep_closure_frac"] == pytest.approx(1.0)
+    assert logged[0]["docking/ep_min_pos_frac"] == pytest.approx(1.0)
 
 
 def test_start_range_is_retaken_each_episode(logged):
@@ -164,7 +164,7 @@ def test_start_range_is_retaken_each_episode(logged):
 
     assert logged[0]["docking/ep_start_pos_m"] == 400.0
     assert logged[1]["docking/ep_start_pos_m"] == 120.0
-    assert logged[1]["docking/ep_closure_frac"] == pytest.approx(0.5)
+    assert logged[1]["docking/ep_min_pos_frac"] == pytest.approx(0.5)
 
 
 def test_counts_accumulate_where_rates_round_a_rare_outcome_away(logged):
