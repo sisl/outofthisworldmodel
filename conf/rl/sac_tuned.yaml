@@ -49,6 +49,16 @@ obs_resnet:          # read only when obs=vector_resnet
 norm_reward: false
 checkpoint:
   save_freq: 100000
+# Pre-flown trajectories to seed the replay buffer before the first gradient
+# step. Mirrors conf/rl/sac.yaml's block, which this config copies rather than
+# inherits, per docs/baselines.md's winner-freezing convention. Off by default.
+demo:
+  repo_id: null
+  revision: null
+  split: train
+  policies: null
+  successful_only: false
+  max_transitions: null
 hyperparams:
   buffer_size: 1000000
   batch_size: 256
