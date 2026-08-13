@@ -125,3 +125,69 @@ def test_disables_itself_when_goal_error_true_is_missing(logged, capsys):
     logged.clear()
     _step(callback, [_info(pos_m=1.0, success=True)], [True])
     assert logged == []
+
+
+def test_closure_frac_divides_closest_approach_by_the_start_range(logged):
+    callback = DockingMetricsCallback(window=100)
+    callback._on_training_start()
+
+    # Opens at 400 m, closes to 100 m: a quarter of the way in.
+    _step(callback, [_info(pos_m=400.0)], [False])
+    _step(callback, [_info(pos_m=100.0)], [False])
+    _step(callback, [_info(pos_m=250.0)], [True])
+
+    assert logged[0]["docking/ep_start_pos_m"] == 400.0
+    assert logged[0]["docking/ep_min_pos_m"] == 100.0
+    assert logged[0]["docking/ep_closure_frac"] == pytest.approx(0.25)
+
+
+def test_closure_frac_is_one_when_the_policy_never_closes(logged):
+    callback = DockingMetricsCallback(window=100)
+    callback._on_training_start()
+
+    _step(callback, [_info(pos_m=300.0)], [False])
+    _step(callback, [_info(pos_m=450.0)], [True])
+
+    assert logged[0]["docking/ep_closure_frac"] == pytest.approx(1.0)
+
+
+def test_start_range_is_retaken_each_episode(logged):
+    callback = DockingMetricsCallback(window=100)
+    callback._on_training_start()
+
+    _step(callback, [_info(pos_m=400.0)], [False])
+    _step(callback, [_info(pos_m=200.0)], [True])
+    # Next episode opens somewhere else entirely; the first one's start must
+    # not leak into it.
+    _step(callback, [_info(pos_m=120.0)], [False])
+    _step(callback, [_info(pos_m=60.0)], [True])
+
+    assert logged[0]["docking/ep_start_pos_m"] == 400.0
+    assert logged[1]["docking/ep_start_pos_m"] == 120.0
+    assert logged[1]["docking/ep_closure_frac"] == pytest.approx(0.5)
+
+
+def test_counts_accumulate_where_rates_round_a_rare_outcome_away(logged):
+    callback = DockingMetricsCallback(window=100)
+    callback._on_training_start()
+
+    for _ in range(99):
+        _step(callback, [_info(pos_m=300.0)], [True])
+    _step(callback, [_info(pos_m=1.0, success=True)], [True])
+
+    assert logged[-1]["docking/docked_count"] == 1
+    assert logged[-1]["docking/truncated_count"] == 99
+    assert logged[-1]["docking/docked_rate"] == pytest.approx(0.01)
+
+
+def test_counts_are_cumulative_past_the_rate_window(logged):
+    callback = DockingMetricsCallback(window=10)
+    callback._on_training_start()
+
+    _step(callback, [_info(pos_m=1.0, success=True)], [True])
+    for _ in range(20):
+        _step(callback, [_info(pos_m=300.0)], [True])
+
+    # The dock has fallen out of the 10-episode rate window, but happened.
+    assert logged[-1]["docking/docked_rate"] == 0.0
+    assert logged[-1]["docking/docked_count"] == 1
