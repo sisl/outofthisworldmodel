@@ -1,0 +1,16 @@
+# iss_numerical_ports_approach rendered at 224x224 -- the approach reward
+# weighting on the pixel observation, so the reward comparison the vector
+# baselines run can be repeated with frames in the observation.
+#
+# Inherits the reweighting (and its reasoning) from
+# iss_numerical_ports_approach and adds only the render size, exactly as
+# iss_numerical_ports_render224 does for the base reward. The two render224
+# configs differ from each other in nothing but reward_weights, so a pixel
+# reward comparison is as controlled as the vector one.
+defaults:
+  - iss_numerical_ports_approach
+  - _self_
+
+render:
+  image_width: 224
+  image_height: 224

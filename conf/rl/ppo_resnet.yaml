@@ -1,0 +1,42 @@
+# PPO on the pixel observation: the 27-wide vector with a frozen ResNet-18
+# embedding of the rendered frame concatenated onto it.
+#
+#   uv run python -m owm.baselines.rl.train rl=ppo_resnet \
+#     environments=iss_numerical_ports_render224 val.enabled=false
+#
+# NOT a frozen sweep winner. docs/baselines.md's winner-freezing convention
+# covers ppo_tuned.yaml / sac_tuned.yaml; the pixel sweeps (sweeps/ppo_resnet
+# .yaml) have not been run, so there is no pixel winner to freeze. This
+# inherits ppo_tuned's hyperparameters as the best available starting point
+# and changes only what the observation change forces. Read any result from
+# it as untuned-for-pixels, and do not report it as a tuned baseline.
+defaults:
+  - ppo_tuned
+  - _self_
+
+obs: vector_resnet
+
+# Four, not ppo_tuned's 32. Every worker renders, and a render context takes a
+# Vulkan device worth ~1.9 GB, so the env count is a GPU budget here rather
+# than a CPU one -- the same reason sweep_trial.py pins PIXEL_N_ENVS = 4.
+n_envs: 4
+
+# Pixel steps cost far more than vector ones -- each is a render plus a
+# ResNet forward -- so the budget is cut with the throughput rather than held
+# at the vector runs' 10M. The pixel sweep specs make the same trade, at 100k
+# trial steps against the vector specs' 500k.
+total_timesteps: 2000000
+
+hyperparams:
+  # 2048 * 4 envs = the 8192-transition rollout ppo_tuned holds at 256 * 32,
+  # which is the rollout the vector winner was tuned at. Same reasoning as
+  # ppo_tuned's header: n_steps and n_envs have to move together.
+  n_steps: 2048
+  policy_kwargs:
+    # 256, not ppo_tuned's 64. The sweep preferred [64, 64] on a 27-wide
+    # observation; vector_resnet concatenates ResNet-18's 512-d avgpool
+    # feature onto that, so the policy reads 539 values and a 64-unit first
+    # layer would compress them 8.4x before anything is learned from them.
+    # 256 makes it 2.1x. This is a consequence of the observation change, not
+    # a sweep result -- the pixel sweep is what would settle it.
+    net_arch: [256, 256]

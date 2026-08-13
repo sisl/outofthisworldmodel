@@ -1,0 +1,32 @@
+# SAC on the pixel observation: the 27-wide vector with a frozen ResNet-18
+# embedding of the rendered frame concatenated onto it.
+#
+#   uv run python -m owm.baselines.rl.train rl=sac_resnet \
+#     environments=iss_numerical_ports_render224 val.enabled=false
+#
+# NOT a frozen sweep winner, for the same reason ppo_resnet.yaml is not: the
+# pixel sweeps have not been run, so this inherits sac_tuned's hyperparameters
+# as the best available starting point and changes only what the observation
+# change forces. Read any result from it as untuned-for-pixels.
+defaults:
+  - sac_tuned
+  - _self_
+
+obs: vector_resnet
+
+# Four, not sac_tuned's 16 -- every worker renders, and a render context takes
+# a Vulkan device worth ~1.9 GB. See ppo_resnet.yaml.
+n_envs: 4
+
+total_timesteps: 2000000
+
+hyperparams:
+  # Back to the sweep winner's own value. sac_tuned raised gradient_steps to 4
+  # to hold one update per 32 transitions at n_envs 16; at n_envs 4 the
+  # winning trial's own pairing -- train_freq 8, gradient_steps 1 -- is that
+  # same ratio, so this is the literal swept value rather than a rescaling.
+  gradient_steps: 1
+  policy_kwargs:
+    # 256, not sac_tuned's 64: vector_resnet makes the observation 539 wide
+    # rather than 27. See ppo_resnet.yaml.
+    net_arch: [256, 256]
