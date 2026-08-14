@@ -225,29 +225,71 @@ Final baselines then launch from the frozen config against the production
 environment:
 
 ```bash
-just train-ppo rl=ppo_tuned environments=iss_numerical_ports
-just train-sac rl=sac_tuned environments=iss_numerical_ports
+just train-ppo rl=ppo_tuned environments=iss_numerical_ports_progress_1hz \
+    environments.reward_weights.progress=-1.0
+just train-sac rl=sac_tuned environments=iss_numerical_ports_progress_1hz
 ```
+
+`progress` is an environment reward weight rather than an SB3 argument, so it
+cannot live in a frozen `rl` config and has to be passed. PPO's winner used
+−1.0; SAC's used −2.0, which is already the environment's own value, so only
+the PPO line carries an override. Launching PPO without it trains a different
+reward from the one its hyperparameters were tuned against.
+
+Launch through `just`, not a bare `uv run`: the recipes export
+`JAX_PLATFORMS=cpu`, and without it XLA initialises a backend on every visible
+card and pre-claims ~75% of each — 73.7 GB on one of these GPUs, measured,
+before torch has allocated anything.
 
 `conf/rl/ppo_tuned.yaml` and `conf/rl/sac_tuned.yaml` are the paper-record
 configs — any reported final baseline number should trace back to a run
 launched from one of them, not from a sweep trial or the untuned defaults.
 
-**Status.** `conf/rl/ppo_tuned.yaml` and `conf/rl/sac_tuned.yaml` currently
-hold winners frozen on 2026-08-13 from sweeps run against
-`iss_numerical_ports` — the base reward at a 50 ms step: `ppo_vector` sweep
-`2gpo2vfy` (winner `daily-sweep-29`, −4,967 over 36 trials) and `sac_vector`
-sweep `rnuijnos` (winner `vague-sweep-21`, −9,257 over 29 trials). Neither
-produced a docking policy: `sweep/final_success` is 0 for every trial in
-both, closest approach never fell below the episode's own start range, and no
-trial beat a zero-thrust policy on the same eval seeds. The only behaviour
-that varied was how far a policy drifted toward the 750 m escape boundary, so
-the objective ranked configs by reliable passivity. Those freezes are correct
-records of their sweeps and the wrong thing to read as tuned docking
-baselines; they stand until the sweeps against
-`iss_numerical_ports_progress_1hz`
-conclude and produce winners to replace them. The pixel sweeps (`ppo_resnet`,
-`sac_resnet`) remain deferred.
+**Runs in flight (2026-08-14).** `ppo_100M_progress1hz` (wandb `bmet3j79`,
+100M steps) and `sac_40M_progress1hz` (wandb `1rsnv2a2`, 40M). The budgets
+differ because SAC is bound by gradient steps rather than env stepping —
+measured 267 env-steps/s against PPO's 801 at their production widths — so the
+two are **not comparable at these budgets**; compare them at a common step
+count. Checkpoints land in `runs/<run_name>/checkpoints/` every 2.5M (PPO) and
+1M (SAC) steps and are local to the training host, since `runs/` is gitignored
+and only the finals upload to the Hub.
+
+**Status.** `conf/rl/ppo_tuned.yaml` and `conf/rl/sac_tuned.yaml` hold winners
+frozen on 2026-08-14 from the sweeps against
+`iss_numerical_ports_progress_1hz` — the dense reward with the progress term,
+at a 1 s control step: `ppo_vector` sweep `nh7k6mai` (winner
+`lyric-sweep-21`, −87) and `sac_vector` sweep `e6q3zlrm` (winner
+`electric-sweep-34`, −121).
+
+These are the first configurations here to beat a zero-thrust policy, which
+scores −405.7 on the same 20 eval episodes. They escape 0–1% of episodes and
+close to 0.8% (PPO) and 8% (SAC) of the episode's own start range, against the
+~87% the earlier 20M-step runs plateaued at. What separates every good trial
+from every bad one is whether it stops leaving the domain: escape rate
+correlates with the objective far more strongly than any hyperparameter does.
+
+**They are approach controllers, not docking policies.** `sweep/final_success`
+is 0.00 for every trial in both sweeps. The gate is 0.1 m with velocity,
+attitude and body-rate constraints on top, and closing to metres is a
+different problem from closing to centimetres.
+
+**Seed spread is wider than the gaps between top trials.** The ablation below
+measured 200–400 return units between seeds with every hyperparameter fixed,
+so a sweep's single winner is not reliably its best configuration. Both frozen
+configs therefore take the settings their top two trials independently agreed
+on and fill in the rest from the winner; the headers mark which is which.
+
+**A one-dimension ablation retired `target_entropy` as a tuned quantity.**
+`sweeps/sac_entropy.yaml` (sweep `wc01nek0`) pinned every other hyperparameter
+and swept it over −3, −1, 0 and 3. The spread *within* a setpoint (217 and 399
+return units) exceeded the differences *between* setpoints, so the value in
+`sac_tuned.yaml` is an admissible one both top trials used rather than a
+result. An earlier reading of the broad sweep appeared to show `−3` dominating;
+it did not survive more trials, which is what the ablation was built to check.
+
+The pixel sweeps (`ppo_resnet`, `sac_resnet`) remain deferred: at measured
+pixel throughput a trial buys ~650k steps in two hours, against the 5–30M
+where both reference results see learning emerge.
 
 **Read the objective against a null policy.** A return only means something
 next to what doing nothing is worth on the same episodes.
@@ -258,6 +300,15 @@ prints the three numbers a trial is scored on. On
 success, and 270 m closure against a 100–500 m start shell. Run it whenever
 the reward or the control step changes; the figure is a property of both, and
 a trial that does not beat it learned nothing.
+
+**Match the episode count to the report you are reading.** The periodic
+reports fly `EVAL_EPISODES` (5) and the final one `FINAL_EVAL_EPISODES` (20),
+over different seed sets, and the 5-episode set is the easier of the two: the
+same null policy scores **−484.8** there. The baseline takes an episode count
+for exactly this reason (`pocs/null_action_baseline.py <env> <episodes>`).
+Comparing a periodic `sweep/eval_mean_return` against the 20-episode figure
+reads as a policy well clear of the baseline when it is not — rank trials by
+`sweep/final_mean_return`, which is the 20-episode number.
 
 It also measures what the swept `progress` weight costs the objective's
 comparability. The same protocol on `iss_numerical_ports_dense_1hz`, which is
