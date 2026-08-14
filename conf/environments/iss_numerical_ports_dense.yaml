@@ -66,12 +66,19 @@ reward_weights:
   # that is most of what makes arriving worth more than parking.
   dock_success: 1000.0
 
-  # Unchanged, and still absorbing: leaving the domain stops the episode paying
-  # the shaped cost it would otherwise owe to the horizon, so an unpenalised
-  # exit scores above any flight continued in bounds. That is the failure the
-  # earlier warm-started runs actually found -- 307 escapes in 5M steps -- and
-  # the term that prices it has to keep outweighing a full horizon of drift.
-  escape: -10000.0
+  # Still absorbing, and still priced against the horizon an exit skips --
+  # but that horizon is now 360 steps, not 7,200. A zero-thrust episode here
+  # returns -470 on average and -700 at worst, so the inherited -10,000 was
+  # 21x the cost it is meant to just exceed. Left at that value it dumps a
+  # spike twenty times an episode's entire shaped cost into the critic every
+  # time a policy leaves the domain, which is what took SAC's critic loss to
+  # 22,493 and its actor to NaN at 5M steps.
+  #
+  # 1.17x the worst passive horizon is the ratio the 7,200-step design used
+  # (-10,000 against -8,523). Here that is ~-820; -1,000 keeps a margin and
+  # holds the symmetry with dock_success the original had, so leaving is
+  # exactly as bad as arriving is good.
+  escape: -1000.0
 
 reward_shaping:
   # The orientation density knob. The rotational pair is scaled by
