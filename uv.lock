@@ -2569,7 +2569,7 @@ dev = [{ name = "pytest", specifier = ">=8.0" }]
 [[package]]
 name = "owm-envs"
 version = "0.1.0"
-source = { git = "ssh://git@github.com/sisl/outofthisworldmodel-envs.git?rev=main#e7f8dc31a0c93d478c7f3d678c3ac07c402aa21e" }
+source = { git = "ssh://git@github.com/sisl/outofthisworldmodel-envs.git?rev=main#03f40b9ed94115d4d80326ca1b6749fb4fc9b65c" }
 dependencies = [
     { name = "astrojax" },
     { name = "gymnasium" },

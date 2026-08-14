@@ -1,0 +1,42 @@
+# The dense 1 Hz config with the progress term switched on.
+#
+# WHY. The 20M-step runs on iss_numerical_ports_dense_1hz learned to stop
+# escaping -- SAC's escape share fell 0.85 -> 0.25 and its val return improved
+# 25x -- but not to close: mean ep_min_pos_frac sat flat at ~0.87 over 13,883
+# PPO episodes and drifted the wrong way for SAC, with zero docks. Return
+# improved while range did not, which is a policy getting better at holding
+# station rather than at approaching.
+#
+# The absolute position term does not make closing pay soon enough. Measured
+# on this config, at 1 m/s over a 1 s step:
+#
+#     velocity cost         -0.00905
+#     position recovered    +0.00400
+#     net                   -0.00505     <- the first step of an approach loses
+#
+# so approaching is a bet that only pays after enough steps that undirected
+# exploration never sustains it. The progress term prices the metre when it is
+# closed rather than through the slow decay of an absolute penalty:
+#
+#     progress -2.0         +0.00889     net +0.00384
+#
+# -2.0 is chosen as the smallest round value that makes that step positive
+# with margin; -1.0 still leaves it slightly negative.
+#
+# It does NOT reward speed. The term telescopes to progress * (start_range -
+# end_range) / position_scale_m over an episode, so cycling in and out earns
+# nothing and only the endpoint matters; the velocity term still prices how
+# fast the range is closed. That is potential-based shaping in the sense of Ng
+# et al. -- it leaves the optimal policy alone and changes only when the credit
+# arrives, which is the entire complaint above.
+#
+# Dunlap et al. (JAIS 20(1), 2023) shape their docking reward this way. Broida
+# and Linares (AAS 19-462) do not -- they use an absolute state-error penalty
+# -- but they also start 1,000 m out with a goal in free space 10 m clear of
+# their keep-out zone, and never have to thread a hull to reach it.
+defaults:
+  - iss_numerical_ports_dense_1hz
+  - _self_
+
+reward_weights:
+  progress: -2.0
