@@ -1,0 +1,85 @@
+# A focused sweep over SAC's exploration setpoint alone, to settle whether the
+# broad sweep's winner sits at the edge of the range or inside it.
+#
+#   just sweep-init sac_entropy
+#   just sweep-fleet <id> sac_entropy 6 2,3
+#
+# WHY THIS EXISTS. In sweeps/sac_vector.yaml, every trial that beat a
+# zero-thrust policy drew target_entropy -3, the highest-entropy value that
+# spec offers: median escape rate 0.28 against 0.69 at -12 and 0.78 at "auto"
+# (-6), and median closest approach 0.72 of the start range against 0.97-0.99.
+# The effect is large and monotone in the direction of MORE exploration, which
+# means the best setting is probably outside the range that was searched --
+# a greedy policy commits to full thrust and crosses the 750 m boundary, and
+# holding the action distribution wide is what keeps it in the domain long
+# enough to learn an approach.
+#
+# Freezing a boundary value into a 100M-step run is the expensive version of
+# that mistake, so this resolves it first. -3 is carried over as the control
+# and the range is extended upward; 3.0 is well inside what the action space
+# admits, since a uniform policy on [-1, 1]^6 has differential entropy
+# 6*ln(2) ~= 4.16.
+#
+# EVERY OTHER HYPERPARAMETER IS PINNED to sac_vector's winning trial
+# (brisk-sweep-21, final -158). This is an ablation wearing a sweep's clothes:
+# with one free dimension the search cannot hide the effect in a basin the way
+# a ten-dimensional space did, and `seed` is swept purely for replication.
+#
+# READ IT AS EARLY BEHAVIOUR. The horizon is half sac_vector's, which is what
+# keeps this inside a few hours; the discriminator -- whether a policy stops
+# escaping -- separated well before 600k there. Confirm the winner at the full
+# horizon before committing it to a long run.
+program: src/owm/baselines/rl/sweep_trial.py
+command:
+  - ${env}
+  - uv
+  - run
+  - python
+  - -m
+  - owm.baselines.rl.sweep_trial
+method: bayes
+metric:
+  name: sweep/eval_mean_return
+  goal: maximize
+early_terminate:
+  type: hyperband
+  min_iter: 2
+parameters:
+  algo:
+    value: sac
+  environments:
+    value: iss_numerical_ports_progress_1hz
+  trial_timesteps:
+    value: 750000
+
+  # --- the question ---
+  target_entropy:
+    # -3 is sac_vector's winner and the control. The rest extend past it,
+    # which is the direction its own result points.
+    values: [-3.0, -1.0, 0.0, 3.0]
+  seed:
+    # Replication, not search: one trial per setpoint would not separate a
+    # setpoint from a seed.
+    values: [0, 1]
+
+  # --- pinned to brisk-sweep-21, sac_vector's best completed trial ---
+  progress:
+    value: 0.0
+  learning_rate:
+    value: 6.705699138368145e-05
+  batch_size:
+    value: 256
+  gamma:
+    value: 0.997
+  tau:
+    value: 0.003872871904041408
+  train_freq:
+    value: 4
+  gradient_steps:
+    value: 4
+  learning_starts:
+    value: 20000
+  buffer_size:
+    value: 300000
+  policy_kwargs:
+    value: {net_arch: [256, 256, 256]}
