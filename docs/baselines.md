@@ -30,6 +30,23 @@ just sweep-agent <sweep_id> sac_vector   # one agent, on GPU 2
 just sweep-agent <sweep_id> sac_vector 3 # a second agent, on GPU 3
 ```
 
+**Running a fleet.** One agent runs one trial at a time, so covering a search
+space overnight means several side by side. `just sweep-fleet <sweep_id>
+<spec> <count> [gpus]` launches `count` detached agents, round-robin over the
+GPU list for a `sac_*` spec and CPU-only for a `ppo_*` one, logging each to
+`runs/logs/<spec>-<sweep_id>-<n>.log` and recording its process group in
+`runs/logs/sweep-fleet.pgids`. `just sweep-fleet-stop` SIGINTs every recorded
+group — the group, not the agent alone, so the trial in flight gets the signal
+too and finishes its final eval instead of dying with its objective
+unreported.
+
+The binding resource is CPU, not GPU: every env worker is a process
+integrating the dynamics, while a SAC learner asks little of a card and a PPO
+learner never touches one. The recipe caps each learner's thread count for the
+same reason — env workers pin themselves to one thread each, but left at
+torch's default every learner in a fleet claims a thread per core, and they
+spend the night contending rather than training.
+
 `sweep-init` creates a wandb Bayesian sweep from `sweeps/<name>.yaml`.
 `sweep-agent` pins devices off the spec's `ppo_*`/`sac_*` prefix:
 `CUDA_VISIBLE_DEVICES=""` for PPO, and for SAC a single GPU out of 2/3, the

@@ -74,6 +74,55 @@ sweep-agent SWEEP_ID SWEEP GPU="2":
     esac
     uv run wandb agent "$WANDB_ENTITY/$WANDB_PROJECT/{{SWEEP_ID}}"
 
+# Launch COUNT detached agents for one sweep, round-robin over GPUS for SAC
+sweep-fleet SWEEP_ID SWEEP COUNT GPUS="2,3":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # One agent runs one trial at a time, so covering a search space in a
+    # night means running several side by side. The binding resource is CPU:
+    # every env worker is a process integrating the dynamics, and a SAC
+    # learner asks little of a card that a PPO learner does not touch at all.
+    mkdir -p runs/logs
+    IFS=',' read -r -a gpus <<< "{{GPUS}}"
+    for i in $(seq 0 $(( {{COUNT}} - 1 ))); do
+        case "{{SWEEP}}" in
+            # Threads for the LEARNER process; env workers pin themselves to
+            # one each (owm.envs.factory). Left at torch's default every
+            # learner would claim a thread per core, and a fleet of them would
+            # spend the night contending rather than training. PPO's learner
+            # does its gradient work here, SAC's does it on the card.
+            ppo_*) device="" ; threads=4 ;;
+            sac_*) device="${gpus[$(( i % ${#gpus[@]} ))]}" ; threads=2 ;;
+            *) echo "unknown sweep '{{SWEEP}}': expected ppo_* or sac_*" >&2; exit 1 ;;
+        esac
+        log="runs/logs/{{SWEEP}}-{{SWEEP_ID}}-$i.log"
+        # setsid gives each agent its own process group, so sweep-fleet-stop
+        # can signal an agent and the trial it is running together -- which is
+        # what a terminal's Ctrl-C does, and what lets an in-flight trial
+        # finish its final eval instead of dying with its objective unreported.
+        CUDA_VISIBLE_DEVICES="$device" \
+        OMP_NUM_THREADS="$threads" MKL_NUM_THREADS="$threads" \
+        SWEEP_TRIAL_MAX_SECONDS="${SWEEP_TRIAL_MAX_SECONDS:-14400}" \
+            setsid nohup uv run wandb agent \
+            "$WANDB_ENTITY/$WANDB_PROJECT/{{SWEEP_ID}}" > "$log" 2>&1 &
+        pgid=$(ps -o pgid= -p $! | tr -d ' ')
+        echo "$pgid" >> runs/logs/sweep-fleet.pgids
+        echo "{{SWEEP}} agent $i: pgid $pgid, CUDA_VISIBLE_DEVICES='$device', $log"
+    done
+
+# SIGINT every agent sweep-fleet launched, so in-flight trials report first
+sweep-fleet-stop:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    pgids=runs/logs/sweep-fleet.pgids
+    if [[ ! -s "$pgids" ]]; then echo "no fleet recorded in $pgids"; exit 0; fi
+    while read -r pgid; do
+        # A group whose agent already exited is not an error to report.
+        if kill -INT -- "-$pgid" 2>/dev/null; then echo "SIGINT -> pgid $pgid"; fi
+    done < "$pgids"
+    rm -f "$pgids"
+    echo "budget ~10 min for in-flight trials to finish their final eval"
+
 test:
     uv run pytest
 
