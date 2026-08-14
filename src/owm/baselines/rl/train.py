@@ -298,6 +298,14 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
     # model is built; the demonstrations are loaded into it further down.
     demo_conf = cfg.rl.get("demo")
     demo_fraction = float(demo_conf.get("protected_fraction", 0.0)) if demo_conf else 0.0
+    # Checked rather than clamped: the guard below is `> 0`, so a negative
+    # value would train a plain buffer while the config, the sweep and the run
+    # summary all say the demos are protected.
+    if not 0.0 <= demo_fraction < 1.0:
+        raise SystemExit(
+            f"rl.demo.protected_fraction is {demo_fraction}; it is a share of "
+            "each batch and must be in [0, 1)"
+        )
     extra_algo_kwargs: dict = {}
     if demo_fraction > 0.0 and demo_conf and demo_conf.get("repo_id"):
         from owm.baselines.rl.demo_mix import DemoMixReplayBuffer
@@ -392,6 +400,8 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
             summary["demo/protected_fraction"] = demo_fraction
             summary["demo/protected_transitions"] = float(n)
         bc_steps = int(demo_conf.get("bc_steps", 0) or 0)
+        if bc_steps < 0:
+            raise SystemExit(f"rl.demo.bc_steps is {bc_steps}; it is a step count")
         if bc_steps > 0:
             from owm.baselines.rl.demo_mix import behaviour_clone
 

@@ -111,9 +111,20 @@ parameters:
   batch_size:
     values: [256, 512, 1024]
   train_freq:
-    values: [1, 4, 8]
+    # Pinned, so that gradient_steps alone sets the update-to-data ratio.
+    # Swept independently these two span a 64x range of gradient steps per
+    # trial, and at the top of it a 500k-transition trial owes ~1M updates --
+    # far past the two-hour bound, so those trials would time out having
+    # trained a fraction of the horizon, possibly before hyperband's three
+    # reports. The sweep would then be ranking compute cost as much as
+    # learning. Bounding the ratio is what keeps trials comparable.
+    value: 8
   gradient_steps:
-    values: [1, 4, 8]
+    # At train_freq 8 and n_envs 4, SAC updates once per 32 transitions per
+    # gradient step, so these are UTD 1/32, 1/16 and 1/8. 1/32 is what
+    # sac_tuned froze; the sweep searches upward from it, and the worst case
+    # is ~63k updates over the trial.
+    values: [1, 2, 4]
   policy_kwargs:
     values:
       - {net_arch: [256, 256]}

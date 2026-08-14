@@ -237,13 +237,23 @@ class EvalReportCallback(BaseCallback):
         venv.seed(self._seed + first_episode)
         obs = venv.reset()
         width = venv.num_envs
+        # The reset state's own goal error, before the policy has acted. Read
+        # here rather than from the first step's info, so the baseline an
+        # unsafe episode is scored at is where the episode BEGAN and not where
+        # the policy's opening action had already put it.
+        reset_infos = list(getattr(venv, "reset_infos", None) or [])
         ep_return = np.zeros(width, dtype=np.float64)
         success = np.zeros(width, dtype=bool)
         mins = [self._fresh_minima() for _ in range(width)]
         finals: list[dict[str, float] | None] = [None] * width
         # For the closure objective: where each episode began, and whether it
         # ended somewhere that should void its closure credit.
-        starts: list[float | None] = [None] * width
+        starts: list[float | None] = [
+            error["pos_m"]
+            if (error := self._reset_goal_error(reset_infos, index)) is not None
+            else None
+            for index in range(width)
+        ]
         unsafe = np.zeros(width, dtype=bool)
         # A vec env auto-resets a finished env, so anything it reports after
         # that belongs to an episode nobody asked for.
@@ -277,14 +287,32 @@ class EvalReportCallback(BaseCallback):
         # all-inf sentinel.
         episode_mins = [mins[i] if finals[i] is not None else None for i in range(width)]
         # An unsafe episode scores its start, so closing on the hull and
-        # hitting it is worth exactly as much as never having left.
+        # hitting it is worth exactly as much as never having left. So does an
+        # episode the step cap cut off mid-flight: it has no outcome to judge,
+        # and dropping it instead would quietly average the objective over
+        # fewer episodes than the trial was asked to fly -- and over a
+        # different set than mean return is averaged over.
         closures = [
             None
-            if finals[i] is None or starts[i] is None
-            else (starts[i] if unsafe[i] else mins[i]["pos_m"])
+            if starts[i] is None
+            else (mins[i]["pos_m"] if finals[i] is not None and not unsafe[i] else starts[i])
             for i in range(width)
         ]
         return ep_return.tolist(), success.tolist(), finals, episode_mins, closures
+
+    @staticmethod
+    def _reset_goal_error(reset_infos: list, index: int) -> dict[str, float] | None:
+        """The reset state's goal error, when the vec env exposes one.
+
+        Silent about a miss, unlike _goal_error: reset_infos is an SB3 detail
+        rather than an env contract, and the rollout falls back to the first
+        stepped info -- one control interval later, which at dt=50 ms is
+        millimetres. Warning here would fire on every round of an env whose
+        step infos are perfectly fine.
+        """
+        if index >= len(reset_infos) or not isinstance(reset_infos[index], dict):
+            return None
+        return reset_infos[index].get("goal_error_true")
 
     def _goal_error(self, info: dict) -> dict[str, float] | None:
         if "goal_error_true" not in info:

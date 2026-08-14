@@ -225,10 +225,15 @@ def load_demo_transitions(
                 terminal, cfg, jnp.asarray(ep_target[-1])))
 
             ep_obs = obs[rows]
-            # The env's next observation, and for the final step the episode
-            # ends there -- SB3 reads next_obs on a done step only through
-            # the timeout path, which these episodes do not take.
-            next_obs = np.vstack([ep_obs[1:], ep_obs[-1:]])
+            # Whether the dataset still holds the row after this episode's
+            # last one. Cutting at the gate leaves the rest of the rollout on
+            # disk, so a cut episode has a real successor state; an episode
+            # that runs to the end of its rollout does not.
+            last = int(rows[-1])
+            has_successor = last + 1 < len(obs) and int(episode[last + 1]) == int(ep)
+            next_obs = np.vstack([
+                ep_obs[1:], obs[last + 1][None] if has_successor else ep_obs[-1:],
+            ])
             done = np.zeros(len(rows), dtype=bool)
             timeout = np.zeros(len(rows), dtype=bool)
             # A cut episode ends because the gate passed, whatever the
@@ -236,11 +241,28 @@ def load_demo_transitions(
             was_truncated = bool(truncated[rows[-1]]) and not bool(terminal.docked)
             done[-1] = not was_truncated
             timeout[-1] = was_truncated
+            # SB3 zeroes a timeout's done and bootstraps the critic off
+            # next_obs, so a timeout step needs a REAL successor state. Where
+            # the episode ran out of dataset there is none, and repeating the
+            # final observation would make the target a self-loop whose fixed
+            # point is reward/(1-gamma) -- ~-1,000 at gamma 0.999, against a
+            # shaped step worth ~-1. Drop the step rather than teach that.
+            dropped = was_truncated and not has_successor
+            if dropped:
+                rows = rows[:-1]
+                if not len(rows):
+                    continue
+                ep_obs, next_obs = ep_obs[:-1], next_obs[:-1]
+                reward, done, timeout = reward[:-1], done[:-1], timeout[:-1]
 
             docked_row = np.zeros(len(rows), dtype=bool)
             collided_row = np.zeros(len(rows), dtype=bool)
-            docked_row[-1] = bool(terminal.docked)
-            collided_row[-1] = bool(terminal.collision)
+            # Only when the terminal step is still here to carry them: the
+            # step above drops it, and the row that becomes last is an
+            # ordinary mid-episode one that ended nothing.
+            if not dropped:
+                docked_row[-1] = bool(terminal.docked)
+                collided_row[-1] = bool(terminal.collision)
 
             chunks.append(DemoTransitions(
                 obs=ep_obs, next_obs=next_obs, action=action[rows], reward=reward,
