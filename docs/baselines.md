@@ -143,11 +143,27 @@ afterward, since a trial with no reported objective is worthless to the
 sweep. The wall-clock bound is on training only, not the whole trial
 process.
 
-**Stopping agents at a deadline.** Run agents under `nohup`/`tmux`; stop them
-with `Ctrl-C` (SIGINT) rather than killing the process. SIGINT lets whichever
-trial is in flight finish its final eval and save instead of losing that
-trial's objective — budget past the deadline for that tail, roughly 8-9
-minutes for the in-flight trial to wrap up.
+**Stopping agents at a deadline.** SIGINT the agent — `just
+sweep-fleet-stop`, or `Ctrl-C` on a foreground `just sweep-agent`. The agent
+forwards the signal to the trial it is running
+(`wandb_agent.AgentProcess._forward_signal`), and `GracefulStopCallback` takes
+it there: it sets a flag, `_on_step` returns False, and `model.learn()` returns
+the same way it does at the end of a horizon. Every `on_training_end` runs, so
+the trial still flies its final 20-episode eval and reports the objective it
+spent hours earning. Budget a couple of minutes for that tail.
+
+This is cooperative on purpose, and the reason `TrialTimeoutCallback` is
+written the same way. Left to Python's default handler the signal raises
+`KeyboardInterrupt` inside `model.learn()`; SB3 calls
+`callback.on_training_end()` as a plain statement after its training loop
+rather than from a `finally`, so an interrupt skips it, `EvalReportCallback`
+never fires its final report, and the trial drops out of the sweep's ranking
+entirely. A second signal is left to the default handler, so an operator who
+needs the process down immediately still has it.
+
+`just sweep-fleet-kill` SIGKILLs the whole session instead — agent, trial and
+env workers, none of which get to report. It is for a graceful stop that has
+already hung, not for a routine shutdown.
 
 ## Winner-freezing convention
 

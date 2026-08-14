@@ -1,3 +1,5 @@
+import os
+import signal
 from pathlib import Path
 
 import numpy as np
@@ -6,7 +8,11 @@ from owm_envs.envs.iss.config import ISSConfig
 
 from owm.baselines.rl import sweep_callbacks, sweep_trial
 from owm.baselines.rl.run_state import CHECKPOINT_DIR, FINAL_MODEL, FINAL_REPLAY_BUFFER
-from owm.baselines.rl.sweep_callbacks import EvalReportCallback, TrialTimeoutCallback
+from owm.baselines.rl.sweep_callbacks import (
+    EvalReportCallback,
+    GracefulStopCallback,
+    TrialTimeoutCallback,
+)
 from owm.baselines.rl.sweep_trial import (
     EVAL_REPORTS,
     RESERVED_KEYS,
@@ -298,6 +304,40 @@ def test_the_wall_clock_budget_covers_setup_too(no_wandb):
     callback._on_training_start()
 
     assert callback._on_step() is False
+
+
+def test_a_stop_signal_ends_training_instead_of_killing_the_trial(no_wandb):
+    # The wandb agent forwards the signal that stops it to the trial it is
+    # running. Left to the default handler that raises KeyboardInterrupt inside
+    # model.learn(), which skips SB3's on_training_end -- so the trial dies
+    # before the final eval that is the only thing the sweep ranks it by.
+    callback = GracefulStopCallback()
+    callback.num_timesteps = 0
+    previous = signal.getsignal(signal.SIGINT)
+    callback._on_training_start()
+    try:
+        assert callback._on_step() is True
+        os.kill(os.getpid(), signal.SIGINT)
+        assert callback._on_step() is False
+    finally:
+        callback._on_training_end()
+    # Restored, so the trial process is left as it was found and a second
+    # signal reaches the default handler.
+    assert signal.getsignal(signal.SIGINT) is previous
+
+
+def test_a_second_stop_signal_is_left_to_the_default_handler(no_wandb):
+    callback = GracefulStopCallback()
+    callback.num_timesteps = 0
+    previous = signal.getsignal(signal.SIGINT)
+    callback._on_training_start()
+    try:
+        os.kill(os.getpid(), signal.SIGINT)
+        # The first signal put the original handler back, so an operator who
+        # needs the process down now is not held by a loop that keeps polling.
+        assert signal.getsignal(signal.SIGINT) is previous
+    finally:
+        callback._on_training_end()
 
 
 def test_environments_defaults_to_the_random_port_training_distribution(tmp_path: Path):

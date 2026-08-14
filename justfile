@@ -96,32 +96,53 @@ sweep-fleet SWEEP_ID SWEEP COUNT GPUS="2,3":
             *) echo "unknown sweep '{{SWEEP}}': expected ppo_* or sac_*" >&2; exit 1 ;;
         esac
         log="runs/logs/{{SWEEP}}-{{SWEEP_ID}}-$i.log"
-        # setsid gives each agent its own process group, so sweep-fleet-stop
-        # can signal an agent and the trial it is running together -- which is
-        # what a terminal's Ctrl-C does, and what lets an in-flight trial
-        # finish its final eval instead of dying with its objective unreported.
+        # setsid puts each agent in a session of its own. That session is what
+        # sweep-fleet-kill signals for a hard stop; the graceful stop signals
+        # the recorded agent pid alone, and the two are different on purpose --
+        # see sweep-fleet-stop.
         CUDA_VISIBLE_DEVICES="$device" \
         OMP_NUM_THREADS="$threads" MKL_NUM_THREADS="$threads" \
         SWEEP_TRIAL_MAX_SECONDS="${SWEEP_TRIAL_MAX_SECONDS:-14400}" \
             setsid nohup uv run wandb agent \
             "$WANDB_ENTITY/$WANDB_PROJECT/{{SWEEP_ID}}" > "$log" 2>&1 &
-        pgid=$(ps -o pgid= -p $! | tr -d ' ')
-        echo "$pgid" >> runs/logs/sweep-fleet.pgids
-        echo "{{SWEEP}} agent $i: pgid $pgid, CUDA_VISIBLE_DEVICES='$device', $log"
+        echo "$!" >> runs/logs/sweep-fleet.pids
+        echo "{{SWEEP}} agent $i: pid $!, CUDA_VISIBLE_DEVICES='$device', $log"
     done
 
-# SIGINT every agent sweep-fleet launched, so in-flight trials report first
+# Stop pulling new trials; the trial in flight runs to its end and reports
 sweep-fleet-stop:
     #!/usr/bin/env bash
     set -euo pipefail
-    pgids=runs/logs/sweep-fleet.pgids
-    if [[ ! -s "$pgids" ]]; then echo "no fleet recorded in $pgids"; exit 0; fi
-    while read -r pgid; do
-        # A group whose agent already exited is not an error to report.
-        if kill -INT -- "-$pgid" 2>/dev/null; then echo "SIGINT -> pgid $pgid"; fi
-    done < "$pgids"
-    rm -f "$pgids"
-    echo "budget ~10 min for in-flight trials to finish their final eval"
+    pids=runs/logs/sweep-fleet.pids
+    if [[ ! -s "$pids" ]]; then echo "no fleet recorded in $pids"; exit 0; fi
+    while read -r pid; do
+        # The agent, which forwards the signal to the trial it is running
+        # (wandb_agent.AgentProcess._forward_signal). The trial takes it
+        # cooperatively -- GracefulStopCallback ends training so SB3 still runs
+        # on_training_end, and the final eval that is the trial's objective
+        # still happens. An agent that already exited is not an error.
+        if kill -INT "$pid" 2>/dev/null; then echo "SIGINT -> agent $pid"; fi
+    done < "$pids"
+    rm -f "$pids"
+    echo "each agent finishes its trial's final eval, then exits"
+
+# Force the fleet down now, losing the in-flight trials' objectives entirely
+sweep-fleet-kill:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    pids=runs/logs/sweep-fleet.pids
+    if [[ ! -s "$pids" ]]; then echo "no fleet recorded in $pids"; exit 0; fi
+    while read -r pid; do
+        # SIGKILL across the whole session, which is the agent, the trial and
+        # the trial's env workers. Nothing gets to report, which is the
+        # difference between this and sweep-fleet-stop; reach for it only when
+        # the graceful stop is already hung or the deadline has passed.
+        sid=$(ps -o sess= -p "$pid" 2>/dev/null | tr -d ' ' || true)
+        if [[ -n "$sid" ]] && pkill -KILL -s "$sid"; then
+            echo "SIGKILL -> session $sid (agent $pid, its trial and workers)"
+        fi
+    done < "$pids"
+    rm -f "$pids"
 
 test:
     uv run pytest

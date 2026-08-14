@@ -24,7 +24,11 @@ from hydra.errors import MissingConfigException
 from omegaconf import DictConfig, OmegaConf
 
 from owm.baselines.rl.run_state import CHECKPOINT_DIR, FINAL_REPLAY_BUFFER
-from owm.baselines.rl.sweep_callbacks import EvalReportCallback, TrialTimeoutCallback
+from owm.baselines.rl.sweep_callbacks import (
+    EvalReportCallback,
+    GracefulStopCallback,
+    TrialTimeoutCallback,
+)
 from owm.baselines.rl.val_episodes import ValEpisodeCallback
 from owm.envs.factory import DEFAULT_ENV_NAME, ENV_NAME_KEY
 from owm.baselines.rl.train import run_training
@@ -309,6 +313,7 @@ def main() -> None:
                     os.environ.get("SWEEP_TRIAL_MAX_SECONDS", DEFAULT_MAX_SECONDS)
                 )
             ),
+            GracefulStopCallback(),
         ]
         if obs_mode == "vector":
             # Val rounds for the trial. Vector trials only: the val env
