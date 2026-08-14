@@ -34,11 +34,10 @@ just sweep-agent <sweep_id> sac_vector 3 # a second agent, on GPU 3
 space overnight means several side by side. `just sweep-fleet <sweep_id>
 <spec> <count> [gpus]` launches `count` detached agents, round-robin over the
 GPU list for a `sac_*` spec and CPU-only for a `ppo_*` one, logging each to
-`runs/logs/<spec>-<sweep_id>-<n>.log` and recording its process group in
-`runs/logs/sweep-fleet.pgids`. `just sweep-fleet-stop` SIGINTs every recorded
-group — the group, not the agent alone, so the trial in flight gets the signal
-too and finishes its final eval instead of dying with its objective
-unreported.
+`runs/logs/<spec>-<sweep_id>-<n>.log` and recording its pid in
+`runs/logs/sweep-fleet.pids`. `just sweep-fleet-stop` SIGINTs every recorded
+agent; see "Stopping agents at a deadline" below for what that does to the
+trial in flight.
 
 The binding resource is CPU, not GPU: every env worker is a process
 integrating the dynamics, while a SAC learner asks little of a card and a PPO
@@ -64,14 +63,23 @@ the same thing — actual docking behavior — regardless of what produced the
 policy.
 
 Mean return rather than `sweep/eval_safe_min_pos_m`, the closure objective, on
-two grounds. The vector specs hold the reward weights fixed, so returns are
-comparable across their trials in the first place. And under the soft keep-out
-zone `collision_terminates` is false, so `info["collision"]` means "inside the
-hull on this step" rather than "this episode ended by crashing" — closure
-voids an episode's credit on that flag, which now reads where an episode
-happened to finish rather than whether it survived. Closure stays logged on
-every report, so it can still be read after the fact; it is the right
-objective for a spec that searches over reward weights, which these do not.
+two grounds. First, the one reward weight the vector specs search —
+`progress` — is bounded in what it can add to a return, so trials stay
+comparable. It telescopes over an episode to `progress * (start_range -
+end_range) / position_scale_m`, which the 500 m start shell caps at under 9
+against episodes scoring in the hundreds; the null-action baseline below
+measures the gap between the term on and off at 0.3. The event weights
+(`dock_success`, `collision`, `escape`) have no such bound — a trial handed a
+bigger dock bonus scores higher for identical flying — and are deliberately
+left out of the space for that reason.
+
+Second, closure is weaker here than it looks. Under the soft keep-out zone
+`collision_terminates` is false, so `info["collision"]` means "inside the hull
+on this step" rather than "this episode ended by crashing" — and closure voids
+an episode's credit on that flag, which now reads where an episode happened to
+finish rather than whether it survived. Closure stays logged on every report,
+so it can still be read after the fact; it is the right objective for a spec
+that searches the event weights, which these do not.
 
 **Hyperband pruning.** Both specs set `early_terminate: {type: hyperband,
 min_iter: 2}` — a trial must have reported its objective twice before
@@ -101,7 +109,7 @@ that source, not paraphrased from memory):
 - The environment comes from the spec's own `environments` parameter, falling
   back to `sweep_trial.DEFAULT_ENVIRONMENTS` (`iss_numerical_ports`) for a
   spec that names none. Both vector specs pin
-  `iss_numerical_ports_dense_1hz`: the `iss-numerical` env on the random
+  `iss_numerical_ports_progress_1hz`: the `iss-numerical` env on the random
   5-port goal distribution, with the dense-dominant reward and soft keep-out
   zone, flown at a 1 s control step. The dense terms carry the task, so a
   trial's score reflects how it flies rather than whether a terminal bonus
@@ -221,7 +229,8 @@ trial beat a zero-thrust policy on the same eval seeds. The only behaviour
 that varied was how far a policy drifted toward the 750 m escape boundary, so
 the objective ranked configs by reliable passivity. Those freezes are correct
 records of their sweeps and the wrong thing to read as tuned docking
-baselines; they stand until the sweeps against `iss_numerical_ports_dense_1hz`
+baselines; they stand until the sweeps against
+`iss_numerical_ports_progress_1hz`
 conclude and produce winners to replace them. The pixel sweeps (`ppo_resnet`,
 `sac_resnet`) remain deferred.
 
@@ -230,10 +239,17 @@ next to what doing nothing is worth on the same episodes.
 `pocs/null_action_baseline.py` flies the final report's protocol — 20
 episodes at seeds 10,000, 10,001, ... with a constant zero action — and
 prints the three numbers a trial is scored on. On
-`iss_numerical_ports_dense_1hz` it scores **−405.4** mean return, 0% success,
-and 270 m closure against a 100–500 m start shell. Run it whenever the reward
-or the control step changes; the figure is a property of both, and a trial
-that does not beat it learned nothing.
+`iss_numerical_ports_progress_1hz` it scores **−405.7** mean return, 0%
+success, and 270 m closure against a 100–500 m start shell. Run it whenever
+the reward or the control step changes; the figure is a property of both, and
+a trial that does not beat it learned nothing.
+
+It also measures what the swept `progress` weight costs the objective's
+comparability. The same protocol on `iss_numerical_ports_dense_1hz`, which is
+this config with the term off, scores −405.4 — a 0.3 gap, because a policy
+that does not close the range telescopes the term to nearly zero. The
+`progress` arm of a sweep is therefore ranked against the same scale as the
+arm without it.
 
 ## Telemetry
 

@@ -105,10 +105,19 @@ DEFAULT_ENVIRONMENTS = "iss_numerical_ports"
 #   demo_*         -> rl.demo.*  (the pre-flown warm-start block)
 #   dock_success   -> environments.reward_weights.dock_success
 #   collision_penalty -> environments.reward_weights.collision
+#   progress       -> environments.reward_weights.progress
 #
 # The reward weights are routable because a sweep may legitimately search over
 # them, but doing so only means anything against a reward-independent
 # objective -- see CLOSURE_OBJECTIVE in sweep_callbacks.
+#
+# `progress` is the exception that stays comparable under mean return. It
+# telescopes over an episode to progress * (start_range - end_range) /
+# position_scale_m, so what it can add to a return is bounded by the start
+# shell rather than growing with the horizon: at the widest weight a spec
+# searches and a 500 m start, under 9 against returns of several hundred. The
+# event weights have no such bound -- a trial handed a bigger dock bonus scores
+# higher for identical flying -- which is why they are not swept beside it.
 ROUTES = {
     "trial_timesteps": "rl.total_timesteps",
     "obs": "rl.obs",
@@ -120,6 +129,7 @@ ROUTES = {
     "demo_bc_steps": "rl.demo.bc_steps",
     "dock_success": "environments.reward_weights.dock_success",
     "collision_penalty": "environments.reward_weights.collision",
+    "progress": "environments.reward_weights.progress",
 }
 RESERVED_KEYS = frozenset({ALGO_KEY, ENVIRONMENTS_KEY, *ROUTES})
 

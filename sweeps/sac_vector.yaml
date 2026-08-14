@@ -36,8 +36,17 @@ parameters:
     value: sac
   environments:
     # The dense-dominant reward with the soft keep-out zone, flown at a 1 s
-    # control step. See sweeps/ppo_vector.yaml for why both lanes train here.
-    value: iss_numerical_ports_dense_1hz
+    # control step, in the progress variant so reward_weights.progress exists
+    # for the `progress` parameter below to write. See sweeps/ppo_vector.yaml
+    # for why both lanes train here and why this one term is safe to search
+    # against mean return.
+    value: iss_numerical_ports_progress_1hz
+  progress:
+    # 0.0 is no progress term at all; the rest pay the metre as it is closed.
+    # The 20M-step runs on the no-progress reward learned to stop escaping and
+    # never to close -- mean closest approach sat at ~0.87 of the start range
+    # with zero docks -- which is the failure this term exists to price.
+    values: [0.0, -1.0, -2.0, -4.0]
   seed:
     value: 0
   trial_timesteps:
