@@ -1,6 +1,5 @@
-# wandb Bayesian sweep over SAC on the iss-numerical docking env
-# (sweep_trial's default environments=iss_numerical_ports), vector
-# observations.
+# wandb Bayesian sweep over SAC on the iss-numerical docking env, vector
+# observations, dense-dominant reward at a 1 Hz control step.
 #
 #   just sweep-init sac_vector          # prints the sweep id
 #   just sweep-agent <id> sac_vector    # one agent, on GPU 2
@@ -25,16 +24,32 @@ metric:
   goal: maximize
 early_terminate:
   type: hyperband
-  min_iter: 3   # in reports, not epochs: roughly one per 100k steps
+  # In objective reports, not steps or epochs. sweep_trial reports the
+  # objective EVAL_REPORTS times over a trial, so at wandb's default eta of 3
+  # the rungs land at reports 2 and 6 -- 20% and 60% of the horizon below,
+  # i.e. 300k and 900k steps. The first rung sits 15x past the longest
+  # learning_starts this spec can draw, so no trial is banded before it has
+  # taken a gradient step.
+  min_iter: 2
 parameters:
   algo:
     value: sac
+  environments:
+    # The dense-dominant reward with the soft keep-out zone, flown at a 1 s
+    # control step. See sweeps/ppo_vector.yaml for why both lanes train here.
+    value: iss_numerical_ports_dense_1hz
   seed:
     value: 0
   trial_timesteps:
     # The trial's whole horizon. Pinned per spec rather than in code so a
     # slower obs mode can buy itself a different one.
-    value: 500000
+    #
+    # Sized from a measurement on the training host: this lane runs 119
+    # env-steps/s at n_envs 4 and the densest update ratio below, so 1.5M
+    # steps is ~3.5 h of training at the slow end of the search space and
+    # faster at the sparse end. Lower than the PPO lane's horizon because SAC
+    # pays a gradient step out of the same wall clock PPO spends stepping.
+    value: 1500000
   policy_kwargs:
     # Network capacity, as one categorical: SB3's MlpPolicy defaults differ
     # per algorithm (PPO 64x64, SAC 256x256), so the options span both
@@ -52,19 +67,47 @@ parameters:
   batch_size:
     values: [256, 512, 1024]
   gamma:
-    # dt=50 ms, so even 0.995 only looks ~10 s ahead; lower is myopic here.
-    values: [0.995, 0.999, 0.9995]
+    # dt=1 s, so these are lookaheads of 10 s, 20 s, 100 s and ~330 s against
+    # a 360 s episode. See sweeps/ppo_vector.yaml for why the range sits here.
+    values: [0.9, 0.95, 0.99, 0.997]
   tau:
     distribution: log_uniform_values
     min: 1.0e-3
     max: 2.0e-2
+  ent_coef:
+    # SAC's exploration temperature: the weight the entropy bonus carries
+    # against the Q value in both losses. "auto" learns it against a target
+    # entropy of -dim(A), which is the SB3 default and the only setting this
+    # lane has ever run; the fixed values are the comparison.
+    #
+    # Worth searching because a learned temperature is learned against the Q
+    # scale, and the dense reward sets that scale from per-step terms of order
+    # one rather than from events of order ten thousand. Whether the balance
+    # "auto" settles on is the right one under those units is a question, not
+    # an assumption, and it is the knob that decides whether the policy
+    # commits to an approach or keeps sampling around one.
+    values: ["auto", 0.003, 0.03, 0.3]
   train_freq:
-    values: [1, 4, 8]
+    # Pinned, so that gradient_steps alone sets the update-to-data ratio.
+    # Swept independently these two span a 64x range of gradient steps per
+    # trial, and at the top of it a trial owes more updates than the wall-clock
+    # bound can pay for -- so it would time out having trained a fraction of
+    # its horizon, possibly before hyperband's rungs. The sweep would then be
+    # ranking compute cost as much as learning. Bounding the ratio is what
+    # keeps trials comparable.
+    value: 4
   gradient_steps:
-    values: [1, 4, 8]
+    # At train_freq 4 and n_envs 4, SAC updates once per 16 transitions per
+    # gradient step, so these are UTD 1/16, 1/8 and 1/4. The dense end is what
+    # the horizon above was measured at; the sparse end is 4x cheaper. Higher
+    # ratios are excluded rather than merely unlikely: this lane is sample
+    # starved against the tens of millions of steps the reference results
+    # trained on, and a trial that spends its wall clock on updates instead of
+    # transitions is the wrong side of that trade.
+    values: [1, 2, 4]
   learning_starts:
     values: [5000, 10000, 20000]
   buffer_size:
-    # A 500k-step trial never fills 1M, but the smaller buffer forgets its
+    # A 1.5M-step trial never fills 1M, but the smaller buffer forgets its
     # early transitions, which is the thing worth measuring.
     values: [300000, 1000000]

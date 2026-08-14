@@ -1,6 +1,5 @@
-# wandb Bayesian sweep over PPO on the iss-numerical docking env
-# (sweep_trial's default environments=iss_numerical_ports), vector
-# observations.
+# wandb Bayesian sweep over PPO on the iss-numerical docking env, vector
+# observations, dense-dominant reward at a 1 Hz control step.
 #
 #   just sweep-init ppo_vector          # prints the sweep id
 #   just sweep-agent <id> ppo_vector    # one agent, CPU only
@@ -24,16 +23,35 @@ metric:
   goal: maximize
 early_terminate:
   type: hyperband
-  min_iter: 3   # in reports, not epochs: roughly one per 100k steps
+  # In objective reports, not steps or epochs. sweep_trial reports the
+  # objective EVAL_REPORTS times over a trial, so at wandb's default eta of 3
+  # the rungs land at reports 2 and 6 -- 20% and 60% of the horizon below,
+  # i.e. 800k and 2.4M steps. The first rung is what bounds the cost of a bad
+  # draw: a trial killed there spent a fifth of a full one.
+  min_iter: 2
 parameters:
   algo:
     value: ppo
+  environments:
+    # The dense-dominant reward with the soft keep-out zone, flown at a 1 s
+    # control step. The dense terms carry the task and the events are
+    # corrections, so a trial's score reflects how it flies rather than
+    # whether a terminal bonus survived the discount; and one decision per
+    # second over a 360 s episode is 360 decisions rather than 7,200, which is
+    # the cadence both Broida and Linares (AAS 19-462) and Dunlap et al.
+    # (JAIS 20(1) 2023) trained at.
+    value: iss_numerical_ports_dense_1hz
   seed:
     value: 0
   trial_timesteps:
     # The trial's whole horizon. Pinned per spec rather than in code so a
     # slower obs mode can buy itself a different one.
-    value: 500000
+    #
+    # Sized from a measurement on the training host: this lane runs 376
+    # env-steps/s at n_envs 8, so 4M steps is ~3 h of training, and an agent
+    # gets through four full-length trials in an overnight window. At dt=1 s
+    # that is 4M seconds of flight, ~11,000 episodes.
+    value: 4000000
   policy_kwargs:
     # Network capacity, as one categorical: SB3's MlpPolicy defaults differ
     # per algorithm (PPO 64x64, SAC 256x256), so the options span both
@@ -53,8 +71,13 @@ parameters:
   batch_size:
     values: [256, 512, 1024]
   gamma:
-    # dt=50 ms, so even 0.995 only looks ~10 s ahead; lower is myopic here.
-    values: [0.995, 0.999, 0.9995]
+    # dt=1 s, so these are lookaheads of 10 s, 20 s, 100 s and ~330 s against
+    # a 360 s episode. The top of the range is effectively undiscounted over
+    # the horizon and the bottom is deliberately myopic: the dense reward pays
+    # per step, so a short lookahead is a viable way to fly it rather than the
+    # degenerate setting it would be under a terminal-bonus reward. Broida and
+    # Linares flew 0.9 at this cadence and Dunlap et al. 0.99.
+    values: [0.9, 0.95, 0.99, 0.997]
   gae_lambda:
     distribution: uniform
     min: 0.9
@@ -67,11 +90,13 @@ parameters:
     values: [0.1, 0.2, 0.3]
   n_epochs:
     values: [5, 10, 20]
-  # Worked example of adding a new swept hyperparameter: uncomment to tune
-  # PPO's value-function loss coefficient too. No other file needs to
-  # change — an unrouted key like vf_coef lands in rl.hyperparams.vf_coef,
-  # a real PPO constructor argument, the moment sweep_trial.py sees it.
-  # vf_coef:
-  #   distribution: uniform
-  #   min: 0.3
-  #   max: 0.7
+  vf_coef:
+    # The value loss's weight against the policy loss. Worth searching because
+    # the two are weighted against each other in raw units and the reward's
+    # scale is set by the dense terms: an episode's return runs to a few
+    # hundred, where a reward carried by terminal events runs to tens of
+    # thousands. SB3's 0.5 default sits inside this range rather than at an
+    # edge of it.
+    distribution: uniform
+    min: 0.2
+    max: 1.0
