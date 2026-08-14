@@ -62,7 +62,7 @@ def _shaped_reward_fn(cfg: BaseTaskConfig):
     key = id(cfg)
     if key not in _SHAPED_CACHE:
         _SHAPED_CACHE[key] = jax.jit(jax.vmap(
-            lambda s, a, e, t: docking_reward(s, a, e, cfg, t)
+            lambda s, a, e, t, prev: docking_reward(s, a, e, cfg, t, prev)
         ))
     return _SHAPED_CACHE[key]
 
@@ -193,8 +193,16 @@ def load_demo_transitions(
             docked=jnp.zeros(rows_n, dtype=bool),
             escaped=jnp.zeros(rows_n, dtype=bool),
         )
+        # The previous row, for the optional progress term. Episodes are
+        # contiguous in the shard, so a row's predecessor is the one before it
+        # -- except the first of each episode, which is its own predecessor and
+        # so scores zero progress, exactly as the env's first step does.
+        first_of_episode = np.r_[True, episode[1:] != episode[:-1]]
+        prev_index = np.where(first_of_episode, np.arange(rows_n), np.arange(rows_n) - 1)
+        prev_rel_all = rel[prev_index]
         shaped_all = np.asarray(_shaped_reward_fn(cfg)(
-            jnp.asarray(rel), jnp.asarray(action), quiet, jnp.asarray(target)
+            jnp.asarray(rel), jnp.asarray(action), quiet, jnp.asarray(target),
+            jnp.asarray(prev_rel_all),
         ), dtype=np.float32)
         # Where the dock gate passes, step by step. The generating rollouts did
         # not stop at the gate -- 48 of 94 episodes reach inside 0.1 m and only
@@ -224,7 +232,8 @@ def load_demo_transitions(
             # The absorbing term lands on the step that raised it.
             reward[-1] = float(docking_reward(
                 jnp.asarray(ep_rel[-1]), jnp.asarray(action[rows][-1]),
-                terminal, cfg, jnp.asarray(ep_target[-1])))
+                terminal, cfg, jnp.asarray(ep_target[-1]),
+                jnp.asarray(prev_rel_all[rows[-1]])))
 
             ep_obs = obs[rows]
             # Whether the dataset still holds the row after this episode's
