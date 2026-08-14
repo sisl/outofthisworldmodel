@@ -68,6 +68,7 @@ class EvalReportCallback(BaseCallback):
         obs_mode: str = "vector",
         resnet: dict | None = None,
         env_name: str = DEFAULT_ENV_NAME,
+        action_repeat: int = 1,
     ):
         super().__init__()
         # Caught at registration, i.e. at launch: an eval of no episodes only
@@ -89,6 +90,9 @@ class EvalReportCallback(BaseCallback):
         # and flies it comes from the trial's own composed config, the same
         # place training reads it from.
         self._env_name = env_name
+        # Must match training's, or the objective measures a policy flown at a
+        # cadence it was never trained at.
+        self._action_repeat = action_repeat
         self._every = every_steps
         self._episodes = episodes
         self._final_episodes = final_episodes
@@ -359,6 +363,7 @@ class EvalReportCallback(BaseCallback):
                 vec=self._vec,
                 obs_mode=self._obs_mode,
                 resnet=self._resnet,
+                action_repeat=self._action_repeat,
             )
         return self._env
 

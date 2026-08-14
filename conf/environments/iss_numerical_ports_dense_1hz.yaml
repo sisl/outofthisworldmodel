@@ -1,0 +1,29 @@
+# The dense-reward, soft-keep-out config at a 1 Hz control step.
+#
+# WHY dt AND NOT rl.action_repeat. Both do the same thing to the POLICY -- one
+# decision per second instead of twenty per second -- but they cost very
+# differently. Action repeat holds an action across 20 env steps, so a
+# transition still costs 20 integrator steps; raising dt makes it cost one.
+# Same cadence, a twentieth of the physics, and one transition per env step
+# rather than one per twenty.
+#
+# That matters because transitions are the budget that binds. Broida and
+# Linares (AAS 19-462) trained on ~96M and Dunlap et al. (JAIS 20(1) 2023) on
+# 60-170M, both at dt=1 s and one transition per step. At dt=0.05 with
+# action_repeat=20, a 20M env-step budget buys 1M transitions -- two orders
+# short. Here the same 20M env steps buy 20M transitions, at the same decision
+# rate those results used.
+#
+# max_steps holds the horizon at 360 s, which is what the base config's 7200
+# steps at 50 ms already was -- the episode is the same six minutes of flight,
+# resolved 20x more coarsely.
+#
+# INTEGRATION. The dynamics are RK4, so a 1 s step is a very different
+# proposition from the 1 s Euler step Dunlap integrated with; pocs/dt_fidelity.py
+# measures the divergence against the 50 ms reference over a full horizon.
+defaults:
+  - iss_numerical_ports_dense
+  - _self_
+
+dt: 1.0
+max_steps: 360

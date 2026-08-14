@@ -261,6 +261,9 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
 
         resnet = extractor_kwargs(cfg.rl)
 
+    # .get, not attribute access: a run started before rl.action_repeat existed
+    # resumes from a saved config with no such key, and 1 is what it flew.
+    action_repeat = int(cfg.rl.get("action_repeat", 1) or 1)
     venv = make_vec_env(
         env_conf,
         cfg.rl.n_envs,
@@ -268,6 +271,7 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
         vec=cfg.rl.vec,
         obs_mode=obs_mode,
         resnet=resnet,
+        action_repeat=action_repeat,
     )
     if source is not None:
         venv = VecNormalize.load(str(source_vecnorm), venv)
@@ -334,8 +338,12 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
     callbacks = [
         DockingMetricsCallback(),
         CheckpointCallback(
-            # SB3 counts save_freq in per-env steps; divide to get total steps
-            save_freq=max(cfg.rl.checkpoint.save_freq // cfg.rl.n_envs, 1),
+            # SB3 counts save_freq in per-env steps; divide to get total steps.
+            # action_repeat divides too: every "steps" knob in this config is in
+            # env steps, so a cadence does not silently stretch by k.
+            save_freq=max(
+                cfg.rl.checkpoint.save_freq // (cfg.rl.n_envs * action_repeat), 1
+            ),
             save_path=str(run_dir / CHECKPOINT_DIR),
             name_prefix=NAME_PREFIX,
             save_replay_buffer=True,
@@ -350,8 +358,11 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
                 seed=cfg.seed + 10_000,  # never the training seeds
                 episodes=int(val_conf.episodes),
                 video_episodes=int(val_conf.video_episodes),
-                every_steps=int(val_conf.every_steps),
+                # In env steps like every other cadence here; the callback
+                # compares against SB3's decision counter.
+                every_steps=max(int(val_conf.every_steps) // action_repeat, 1),
                 max_frames=int(val_conf.max_frames),
+                action_repeat=action_repeat,
             ))
         else:
             # Not an error: val.enabled defaults on, and a deliberately
@@ -376,7 +387,11 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
         # Imported here, not at the top: reading the hub's parquet shards pulls
         # in pyarrow and downloads a dataset, and a run without rl.demo set
         # should do neither.
-        from owm.baselines.rl.demo_buffer import load_demo_transitions, seed_replay_buffer
+        from owm.baselines.rl.demo_buffer import (
+            aggregate_for_action_repeat,
+            load_demo_transitions,
+            seed_replay_buffer,
+        )
 
         demos = load_demo_transitions(
             repo_id=str(demo_conf["repo_id"]),
@@ -388,7 +403,20 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
             successful_only=bool(demo_conf.get("successful_only", False)),
             max_transitions=demo_conf.get("max_transitions"),
         )
+        # The dataset was flown one decision per env step; this run may not be.
+        # Seeding per-step rows into a buffer of k-step holds would mix two
+        # time deltas and two reward scales in the same critic target.
+        # Two factors, both from the same cause: the dataset was flown one
+        # decision per 50 ms env step, and this run's decisions may span more
+        # wall-clock than that -- because its env integrates coarsely
+        # (task_cfg.dt), because it holds actions (action_repeat), or both.
+        # Seeding without collapsing would mix time deltas and reward scales.
+        source_dt = float(demo_conf.get("source_dt", 0.05) or 0.05)
+        demo_stride = action_repeat * max(int(round(float(task_cfg.dt) / source_dt)), 1)
+        demos = aggregate_for_action_repeat(demos, demo_stride)
         summary = seed_replay_buffer(model, venv, demos)
+        summary["demo/action_repeat"] = float(action_repeat)
+        summary["demo/stride"] = float(demo_stride)
         # The same observations the buffer holds: normalized once, reused by
         # the protected store and by behaviour cloning so all three agree.
         demo_obs, demo_next = demos.obs, demos.next_obs
@@ -409,10 +437,16 @@ def run_training(cfg: DictConfig, extra_callbacks: Sequence[BaseCallback] = ()) 
         print(f"[demo] seeded replay buffer: {summary}")
         wandb.log(summary)
 
-    # rl.total_timesteps is the run's total budget, but SB3 adds the restored
-    # counter to whatever it is given when reset_num_timesteps=False, so a
-    # resumed leg must ask only for the steps still outstanding.
-    remaining = int(cfg.rl.total_timesteps)
+    # rl.total_timesteps is in ENVIRONMENT steps, and SB3 counts DECISIONS --
+    # the two differ by action_repeat. Budgeting in env steps is what keeps a
+    # run comparable across repeat settings: they are the same six minutes of
+    # flight and the same simulator work whatever k is, where a decision budget
+    # would silently multiply the wall clock by k.
+    #
+    # SB3 also adds the restored counter to whatever it is given when
+    # reset_num_timesteps=False, so a resumed leg asks only for what is
+    # outstanding -- in decisions, the units its counter is in.
+    remaining = int(cfg.rl.total_timesteps) // action_repeat
     if source is not None:
         remaining = max(remaining - model.num_timesteps, 0)
 

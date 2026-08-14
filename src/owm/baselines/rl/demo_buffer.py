@@ -159,6 +159,9 @@ def load_demo_transitions(
     """Read a dataset split and return transitions rewarded under `cfg`."""
     view = env_spec(env_name).view
     checker = EventChecker(cfg)
+    # Whether a collision is absorbing belongs to the run being seeded, not to
+    # the run that flew the dataset.
+    collision_terminates = bool(getattr(cfg, "collision_terminates", True))
     files = _data_files(repo_id, split, revision)
     if not files:
         raise SystemExit(f"dataset {repo_id!r} has no {split}/data/ files to read")
@@ -174,7 +177,6 @@ def load_demo_transitions(
         episode = _column(table, "episode_index").ravel().astype(np.int64)
         policy = _scalar_column(table, "policy_id", np.int64)
         is_last = np.asarray(table.column("is_last").to_pylist(), dtype=bool)
-        truncated = np.asarray(table.column("truncated").to_pylist(), dtype=bool)
         target = np.stack([
             np.asarray(v, dtype=np.float32).reshape(-1)[:7]
             for v in table.column("dock_target").to_pylist()
@@ -236,11 +238,22 @@ def load_demo_transitions(
             ])
             done = np.zeros(len(rows), dtype=bool)
             timeout = np.zeros(len(rows), dtype=bool)
-            # A cut episode ends because the gate passed, whatever the
-            # dataset recorded for the rollout it was cut out of.
-            was_truncated = bool(truncated[rows[-1]]) and not bool(terminal.docked)
-            done[-1] = not was_truncated
-            timeout[-1] = was_truncated
+            # Read from the events, not from the dataset's terminated flag: a
+            # cut episode ends because the gate passed, whatever the rollout it
+            # was cut out of recorded, and -- more importantly -- whether a
+            # collision is absorbing is a property of THIS run's config, not of
+            # the run that flew the data. Seeding a soft-keep-out run with
+            # collisions marked terminal would teach the critic that hitting
+            # the hull ends the world when the env it is training against says
+            # otherwise.
+            absorbing = (
+                bool(terminal.docked)
+                or bool(terminal.escaped)
+                or (bool(terminal.collision) and collision_terminates)
+            )
+            done[-1] = absorbing
+            timeout[-1] = not absorbing
+            was_truncated = not absorbing
             # SB3 zeroes a timeout's done and bootstraps the critic off
             # next_obs, so a timeout step needs a REAL successor state. Where
             # the episode ran out of dataset there is none, and repeating the
@@ -301,6 +314,57 @@ def load_demo_transitions(
                                     "timeout", "episode", "policy_id", "docked",
                                     "collided")])
     return merged
+
+
+def aggregate_for_action_repeat(demos: DemoTransitions, repeat: int) -> DemoTransitions:
+    """Collapse each episode's transitions into `repeat`-step holds.
+
+    The dataset was flown one decision per env step. A run with
+    rl.action_repeat > 1 collects transitions that span `repeat` steps and
+    carry the summed reward of all of them, so seeding it with per-step rows
+    would put two different time deltas -- and two different reward scales,
+    off by `repeat` -- into the same buffer, and the critic would be regressing
+    a mixture of two MDPs.
+
+    THE HELD ACTION IS THE CHUNK'S MEAN, which is an approximation and the one
+    place this is not exact. The demonstrator varied its action over the steps
+    being collapsed, so no single held action reproduces the recorded
+    `next_obs`. The mean is the right choice for the translational half: total
+    impulse is sum(F_i * dt), so holding the mean force over the chunk delivers
+    exactly the impulse the varying sequence did. The rotational half is only
+    approximately so, since body rate enters the attitude update nonlinearly.
+    Over 20 steps of 50 ms the error is small, and it is the honest way to
+    reuse trajectories flown at a different cadence.
+
+    A trailing partial chunk is kept rather than dropped: it carries the
+    episode's terminal, which for the docked episodes is the entire reason the
+    demonstrations are here.
+    """
+    if repeat <= 1:
+        return demos
+
+    starts, actions, rewards, ends = [], [], [], []
+    for ep in np.unique(demos.episode):
+        rows = np.flatnonzero(demos.episode == ep)
+        for begin in range(0, len(rows), repeat):
+            chunk = rows[begin : begin + repeat]
+            starts.append(chunk[0])
+            ends.append(chunk[-1])
+            actions.append(demos.action[chunk].mean(axis=0))
+            rewards.append(demos.reward[chunk].sum())
+    starts, ends = np.asarray(starts), np.asarray(ends)
+    return DemoTransitions(
+        obs=demos.obs[starts],
+        next_obs=demos.next_obs[ends],
+        action=np.asarray(actions, dtype=demos.action.dtype),
+        reward=np.asarray(rewards, dtype=demos.reward.dtype),
+        done=demos.done[ends],
+        timeout=demos.timeout[ends],
+        episode=demos.episode[starts],
+        policy_id=demos.policy_id[starts],
+        docked=demos.docked[ends],
+        collided=demos.collided[ends],
+    )
 
 
 def seed_replay_buffer(model, venv, demos: DemoTransitions) -> dict[str, float]:
