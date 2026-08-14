@@ -1,40 +1,65 @@
 # Winner of the SAC vector sweep, frozen per docs/baselines.md's
-# winner-freezing convention. hyperparams below are the winning trial's
-# config verbatim; everything else matches conf/rl/sac.yaml.
+# winner-freezing convention.
 #
-#   sweep rnuijnos:
-#   https://wandb.ai/duncan-world-models/amos-out-of-this-world-model/sweeps/rnuijnos
-#   winning run vague-sweep-21 (w15cr6vi):
-#   https://wandb.ai/duncan-world-models/amos-out-of-this-world-model/runs/w15cr6vi
-#   objective (sweep/final_mean_return): -9256.71582031250
-#   frozen: 2026-08-13
+#   sweep e6q3zlrm:
+#   https://wandb.ai/duncan-world-models/amos-out-of-this-world-model/sweeps/e6q3zlrm
+#   winning run electric-sweep-34:
+#   objective (sweep/final_mean_return): -121.0
+#   frozen: 2026-08-14
 #
-# The winner was tuned at 500k steps on iss_numerical_ports; total_timesteps
-# below is the full production budget, not the trial's horizon.
+# The `progress` weight this trial won with is -2.0, which is already
+# iss_numerical_ports_progress_1hz's own value, so unlike ppo_tuned this one
+# needs no reward override:
 #
-# ONE DELIBERATE DEVIATION FROM THE TRIAL. The winning trial ran n_envs 4 with
-# gradient_steps 1; this config runs n_envs 16 with gradient_steps 4. With
-# train_freq 8, SAC takes one gradient step per train_freq * n_envs
-# transitions, so both are one update per 32 transitions -- the update-to-data
-# ratio the trial was tuned at, unchanged -- while collecting four times as
-# fast. gradient_steps here is therefore NOT the swept value read literally;
-# the swept value is 1 at n_envs 4, and the pair has to move together.
+#   just train-sac rl=sac_tuned environments=iss_numerical_ports_progress_1hz
 #
-# CAVEAT ON THE OBJECTIVE. No trial in this sweep docked, and none beat a
-# zero-thrust policy, which scores -4,642 on the same eval seeds
-# (pocs/null_action_baseline.py) -- this winner is well short of it. The
-# objective ranked trials by how reliably they stay put rather than by any
-# progress toward the port. It is the correct frozen artefact for the sweep
-# that produced it; it is not evidence that the task is being learned.
+# WHAT THIS WINNER IS. -121 against the null baseline's -405.7 on the same 20
+# eval episodes (pocs/null_action_baseline.py), escaping 0% of episodes and
+# closing to 8% of its starting range. Like ppo_tuned it flies an approach
+# rather than holding station, and like ppo_tuned it never docks:
+# sweep/final_success is 0.00 here and across the sweep. The dock gate is 0.1 m
+# with velocity, attitude and body-rate constraints; closing to metres is a
+# different problem from closing to centimetres.
+#
+# CHOSEN FOR AGREEMENT, NOT JUST FOR RANK. Seed-to-seed spread was measured at
+# 200-400 return units with every hyperparameter fixed (sweeps/
+# sac_entropy.yaml), wider than the gap between the top trials, so the best
+# single trial is not reliably the best configuration. gamma, buffer_size,
+# gradient_steps, learning_starts, net_arch and target_entropy below are what
+# the top two trials independently agreed on; tau, learning_rate and
+# batch_size are this winner's own, taken because the two disagreed.
+#
+# target_entropy IS NOT A TUNED RESULT. sweeps/sac_entropy.yaml pinned every
+# other hyperparameter and swept this one over -3, -1, 0 and 3: the spread
+# WITHIN a setpoint (217 and 399 return units across seeds) exceeded the
+# differences BETWEEN setpoints. -12 is carried over because both top trials
+# used it, not because it was shown to be better than anything else. Treat it
+# as an arbitrary admissible value.
+#
+# ONE DELIBERATE DEVIATION FROM THE TRIAL. The trial ran n_envs 4 with
+# gradient_steps 4 at train_freq 4 -- one gradient step per 4 transitions,
+# a 1/4 update-to-data ratio. This runs n_envs 16, so holding that same ratio
+# takes gradient_steps 16: train_freq 4 collects 4 * 16 = 64 transitions per
+# cycle, and 16 updates over them is again 1 per 4. The ratio is what SAC's
+# sample efficiency actually depends on, so it is the invariant, and
+# gradient_steps has to move with n_envs to preserve it.
+#
+# THE BUDGET IS SET BY WALL CLOCK, NOT BY THE SCIENCE. Measured at 267
+# env-steps/s at these settings, and SAC is bound by gradient steps rather
+# than env stepping, so more workers do not buy more throughput. 100M would be
+# ~104 h alone and longer sharing the box; 40M is what fits the window this
+# was launched into. That is a smaller budget than ppo_tuned's 100M, so the
+# two lanes are NOT directly comparable at their frozen budgets -- compare
+# them at a common step count, or rerun this one longer.
 algo: sac
-n_envs: 16          # with gradient_steps 4 this holds the trial's 1-per-32 UTD
+n_envs: 16
 vec: subproc
-total_timesteps: 10000000
+total_timesteps: 40000000
 device: cuda
 # vector: the 25-dim state alone. vector_resnet: that vector with a frozen
 # pretrained ResNet's embedding of the rendered frame concatenated onto it,
 # still one flat Box, so the policy stays MlpPolicy either way. vector_resnet
-# needs an env config that renders (see environments/iss_coop_goal_ports_render224).
+# needs an env config that renders (see environments/iss_numerical_ports_render224).
 obs: vector
 obs_resnet:          # read only when obs=vector_resnet
   variant: resnet18
@@ -44,31 +69,26 @@ obs_resnet:          # read only when obs=vector_resnet
 # Observations are always normalized (positions are O(100 m) against O(1e-3)
 # body rates). Reward normalization is its own switch and defaults OFF: the
 # shaped reward already costs ~1 per step at the envelope by construction,
-# while a single collision's -1e6 lands in the normalizer's running return
+# while a single event's spike lands in the normalizer's running return
 # variance and crushes every shaped reward that follows it.
-# How many environment steps each action is held for. 1 is one decision per
-# env step. Higher values shorten the decision sequence without touching the
-# physics: at dt=0.05 s and max_steps 7200 an episode is 7,200 decisions at 1
-# and 360 at 20, over the same six minutes of flight.
 #
-# Two things that fixes, both measured. A terminal reward 7,200 steps out is
-# worth gamma**7200 at the episode's start -- 2e-16 at gamma 0.995, zero in
-# float32 -- so the dock bonus is not merely small, it is absent, and holding
-# station is the correct answer to the reward the policy can see. And per-step
-# Gaussian exploration is uncorrelated, so the ~326-step commitment a 1 m/s
-# approach needs before it turns a profit essentially never survives; at 20 it
-# is 16 decisions. See baselines/rl/action_repeat.py.
-#
-# rl.total_timesteps, val.every_steps and checkpoint.save_freq are all in ENV
-# steps regardless of this, so a run's budget and cadences mean the same thing
-# at every setting.
+# action_repeat stays 1: the environment this is tuned on already takes one
+# decision per second, at dt 1.0 over a 360-step horizon.
 action_repeat: 1
 norm_reward: false
 checkpoint:
-  save_freq: 100000
+  # 40 checkpoints over the budget, so a crash costs at most ~1 h of stepping.
+  # A SAC checkpoint carries its replay buffer (train.py sets
+  # save_replay_buffer=True, since a resume without it restarts from an empty
+  # one), which at buffer_size 300k and a 27-wide observation is ~77 MB
+  # apiece -- ~3.1 GB across the run. That is the reason this cadence is a
+  # storage decision and PPO's is not.
+  save_freq: 1000000
 # Pre-flown trajectories to seed the replay buffer before the first gradient
 # step. Mirrors conf/rl/sac.yaml's block, which this config copies rather than
-# inherits, per docs/baselines.md's winner-freezing convention. Off by default.
+# inherits, per docs/baselines.md's winner-freezing convention. Off: the
+# sweep this was frozen from ran no demonstrations, so turning them on here
+# would train something the objective never ranked.
 demo:
   repo_id: null
   revision: null
@@ -88,13 +108,14 @@ demo:
   # before RL starts. 0 leaves the actor at its initialisation.
   bc_steps: 0
 hyperparams:
-  buffer_size: 1000000
+  buffer_size: 300000
   batch_size: 256
-  learning_rate: 1.4104084145098998e-05
-  gamma: 0.995
-  tau: 0.004579110055790741
-  train_freq: 8
-  gradient_steps: 4  # trial value was 1 at n_envs 4; see header
+  learning_rate: 0.00015024187069871738
+  gamma: 0.997
+  tau: 0.01734429982979999
+  train_freq: 4
+  gradient_steps: 16   # trial value was 4 at n_envs 4; see header
   learning_starts: 20000
+  target_entropy: -12.0
   policy_kwargs:
-    net_arch: [64, 64]
+    net_arch: [256, 256, 256]
