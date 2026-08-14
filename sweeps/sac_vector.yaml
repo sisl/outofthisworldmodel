@@ -83,19 +83,23 @@ parameters:
     distribution: log_uniform_values
     min: 1.0e-3
     max: 2.0e-2
-  ent_coef:
-    # SAC's exploration temperature: the weight the entropy bonus carries
-    # against the Q value in both losses. "auto" learns it against a target
-    # entropy of -dim(A), which is the SB3 default and the only setting this
-    # lane has ever run; the fixed values are the comparison.
+  target_entropy:
+    # SAC's exploration setpoint. ent_coef is left at SB3's "auto", which
+    # learns the temperature to hold the policy's entropy at this target;
+    # "auto" here is -dim(A), i.e. -6 for the 6-dof action. Lower targets buy a
+    # more deterministic policy that commits to an approach, higher ones keep
+    # it sampling around one, and which of those the dense reward wants is the
+    # question this dimension asks.
     #
-    # Worth searching because a learned temperature is learned against the Q
-    # scale, and the dense reward sets that scale from per-step terms of order
-    # one rather than from events of order ten thousand. Whether the balance
-    # "auto" settles on is the right one under those units is a question, not
-    # an assumption, and it is the knob that decides whether the policy
-    # commits to an approach or keeps sampling around one.
-    values: ["auto", 0.003, 0.03, 0.3]
+    # The setpoint rather than a fixed ent_coef, which is the other way to ask
+    # it and measured badly: fixed temperatures diverged 4 of 7 trials against
+    # 0 of 3 adaptive ones, the actor going NaN within three minutes every
+    # time. With alpha frozen nothing regulates the squashed Gaussian's
+    # log_std, so it drifts until log_prob overflows -- and a diverged trial
+    # reports no objective at all, so the search cannot even learn to avoid
+    # the region. Holding alpha adaptive and moving its target keeps the knob
+    # without the failure mode.
+    values: ["auto", -3.0, -12.0]
   train_freq:
     # Pinned, so that gradient_steps alone sets the update-to-data ratio.
     # Swept independently these two span a 64x range of gradient steps per

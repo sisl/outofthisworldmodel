@@ -197,7 +197,13 @@ the highest `sweep/final_mean_return` (the objective's value from its final,
 
   api = wandb.Api()
   sweep = api.sweep("<entity>/<project>/<sweep_id>")
-  winner = max(sweep.runs, key=lambda r: r.summary["sweep/final_mean_return"])
+  # Not every run has the key. A trial that diverged -- SAC's actor going NaN
+  # is the usual way -- still closes its wandb run through sweep_trial's own
+  # finally, so it lands in this list as `finished` with no objective at all.
+  # Indexing the summary directly raises KeyError on the first one.
+  scored = [r for r in sweep.runs if "sweep/final_mean_return" in r.summary]
+  winner = max(scored, key=lambda r: r.summary["sweep/final_mean_return"])
+  print(f"{len(scored)}/{len(list(sweep.runs))} runs reported an objective")
   print(winner.id, winner.summary["sweep/final_mean_return"])
   print(dict(winner.config))
   ```

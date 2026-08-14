@@ -105,34 +105,43 @@ sweep-fleet SWEEP_ID SWEEP COUNT GPUS="2,3":
         SWEEP_TRIAL_MAX_SECONDS="${SWEEP_TRIAL_MAX_SECONDS:-14400}" \
             setsid nohup uv run wandb agent \
             "$WANDB_ENTITY/$WANDB_PROJECT/{{SWEEP_ID}}" > "$log" 2>&1 &
-        echo "$!" >> runs/logs/sweep-fleet.pids
+        # Per spec, not one file for the whole machine: the lanes are launched
+        # separately and are normally running side by side, so a single list
+        # would leave no way to stop one without the other.
+        echo "$!" >> "runs/logs/sweep-fleet-{{SWEEP}}.pids"
         echo "{{SWEEP}} agent $i: pid $!, CUDA_VISIBLE_DEVICES='$device', $log"
     done
 
-# Stop pulling new trials; the trial in flight runs to its end and reports
-sweep-fleet-stop:
+# Stop pulling new trials; the trial in flight runs to its end and reports.
+# SWEEP defaults to every lane; name one to stop just that lane.
+sweep-fleet-stop SWEEP="*":
     #!/usr/bin/env bash
     set -euo pipefail
-    pids=runs/logs/sweep-fleet.pids
-    if [[ ! -s "$pids" ]]; then echo "no fleet recorded in $pids"; exit 0; fi
+    shopt -s nullglob
+    files=(runs/logs/sweep-fleet-{{SWEEP}}.pids)
+    if [[ ${#files[@]} -eq 0 ]]; then echo "no fleet recorded for '{{SWEEP}}'"; exit 0; fi
     while read -r pid; do
+        [[ -n "$pid" ]] || continue
         # The agent, which forwards the signal to the trial it is running
         # (wandb_agent.AgentProcess._forward_signal). The trial takes it
         # cooperatively -- GracefulStopCallback ends training so SB3 still runs
         # on_training_end, and the final eval that is the trial's objective
         # still happens. An agent that already exited is not an error.
         if kill -INT "$pid" 2>/dev/null; then echo "SIGINT -> agent $pid"; fi
-    done < "$pids"
-    rm -f "$pids"
+    done < <(cat "${files[@]}")
+    rm -f "${files[@]}"
     echo "each agent finishes its trial's final eval, then exits"
 
-# Force the fleet down now, losing the in-flight trials' objectives entirely
-sweep-fleet-kill:
+# Force a fleet down now, losing the in-flight trials' objectives entirely.
+# SWEEP defaults to every lane; name one to kill just that lane.
+sweep-fleet-kill SWEEP="*":
     #!/usr/bin/env bash
     set -euo pipefail
-    pids=runs/logs/sweep-fleet.pids
-    if [[ ! -s "$pids" ]]; then echo "no fleet recorded in $pids"; exit 0; fi
+    shopt -s nullglob
+    files=(runs/logs/sweep-fleet-{{SWEEP}}.pids)
+    if [[ ${#files[@]} -eq 0 ]]; then echo "no fleet recorded for '{{SWEEP}}'"; exit 0; fi
     while read -r pid; do
+        [[ -n "$pid" ]] || continue
         # SIGKILL across the whole session, which is the agent, the trial and
         # the trial's env workers. Nothing gets to report, which is the
         # difference between this and sweep-fleet-stop; reach for it only when
@@ -141,8 +150,8 @@ sweep-fleet-kill:
         if [[ -n "$sid" ]] && pkill -KILL -s "$sid"; then
             echo "SIGKILL -> session $sid (agent $pid, its trial and workers)"
         fi
-    done < "$pids"
-    rm -f "$pids"
+    done < <(cat "${files[@]}")
+    rm -f "${files[@]}"
 
 test:
     uv run pytest
