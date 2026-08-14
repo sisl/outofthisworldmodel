@@ -122,15 +122,27 @@ sweep-fleet-stop SWEEP="*":
     if [[ ${#files[@]} -eq 0 ]]; then echo "no fleet recorded for '{{SWEEP}}'"; exit 0; fi
     while read -r pid; do
         [[ -n "$pid" ]] || continue
-        # The agent, which forwards the signal to the trial it is running
-        # (wandb_agent.AgentProcess._forward_signal). The trial takes it
-        # cooperatively -- GracefulStopCallback ends training so SB3 still runs
-        # on_training_end, and the final eval that is the trial's objective
-        # still happens. An agent that already exited is not an error.
-        if kill -INT "$pid" 2>/dev/null; then echo "SIGINT -> agent $pid"; fi
+        # SIGKILL, and the AGENT's process group only. Two reasons it is not a
+        # polite SIGINT to the pid.
+        #
+        # The pid is a `uv run` wrapper, which does not pass SIGINT to the
+        # wandb agent underneath it, so signalling it alone stops nothing. And
+        # signalling wider is worse than useless: wandb's agent forwards what
+        # it receives to the trial (AgentProcess._forward_signal), where
+        # GracefulStopCallback ends training early -- and the agent then pulls
+        # a NEW trial rather than exiting, so the net effect is to truncate the
+        # run in flight and carry on.
+        #
+        # SIGKILL cannot be caught, so nothing is forwarded. setsid put the
+        # agent in a group of its own and the agent puts each trial in another,
+        # so this reaches the wrapper and the agent and stops there: the trial
+        # is orphaned, keeps running to its horizon, and still reports its
+        # objective through its own wandb run. An agent that already exited is
+        # not an error.
+        if kill -KILL -- "-$pid" 2>/dev/null; then echo "stopped agent $pid"; fi
     done < <(cat "${files[@]}")
     rm -f "${files[@]}"
-    echo "each agent finishes its trial's final eval, then exits"
+    echo "no new trials will start; those in flight run to their horizon and report"
 
 # Force a fleet down now, losing the in-flight trials' objectives entirely.
 # SWEEP defaults to every lane; name one to kill just that lane.
