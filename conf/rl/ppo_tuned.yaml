@@ -1,52 +1,68 @@
 # Winner of the PPO vector sweep, frozen per docs/baselines.md's
-# winner-freezing convention. hyperparams below are the winning trial's
-# config verbatim; everything else matches conf/rl/ppo.yaml.
+# winner-freezing convention.
 #
-#   sweep 2gpo2vfy:
-#   https://wandb.ai/duncan-world-models/amos-out-of-this-world-model/sweeps/2gpo2vfy
-#   winning run daily-sweep-29 (1gh96v8h):
-#   https://wandb.ai/duncan-world-models/amos-out-of-this-world-model/runs/1gh96v8h
-#   objective (sweep/final_mean_return): -4967.479248046875
-#   frozen: 2026-08-13
+#   sweep nh7k6mai:
+#   https://wandb.ai/duncan-world-models/amos-out-of-this-world-model/sweeps/nh7k6mai
+#   winning run lyric-sweep-21:
+#   objective (sweep/final_mean_return): -87.0
+#   frozen: 2026-08-14
 #
-# The winner was tuned at 500k steps on iss_numerical_ports; total_timesteps
-# below is the full production budget, not the trial's horizon.
+# Launch it against the reward it was tuned on. The `progress` weight is an
+# ENVIRONMENT term, not an SB3 argument, so it does not live in hyperparams
+# below and has to be passed:
+#
+#   just train-ppo rl=ppo_tuned environments=iss_numerical_ports_progress_1hz \
+#       environments.reward_weights.progress=-1.0
+#
+# WHAT THIS WINNER IS. The first configuration in this project to beat a
+# zero-thrust policy by a wide margin: -87 against the null baseline's -405.7
+# on the same 20 eval episodes (pocs/null_action_baseline.py), escaping 1% of
+# episodes and closing to 0.8% of its starting range -- metres, from a 100-500 m
+# start shell. Earlier sweeps ranked configurations by how reliably they held
+# station; this one flies an approach.
+#
+# IT STILL DOES NOT DOCK. sweep/final_success is 0.00 here and for every other
+# trial in the sweep. The dock gate is 0.1 m with velocity, attitude and
+# body-rate constraints on top, and closing to metres is not the same problem
+# as closing to centimetres. Read this as the best approach controller the
+# sweep found, not as a docking policy.
+#
+# CHOSEN FOR AGREEMENT, NOT JUST FOR RANK. The ablation in sweeps/
+# sac_entropy.yaml measured seed-to-seed spread at 200-400 return units with
+# every hyperparameter held fixed, which is wider than the gap between the top
+# few trials -- so the single best trial is not reliably the single best
+# configuration. gamma, n_steps, batch_size and clip_range below are what the
+# top two trials independently agreed on; learning_rate, n_epochs, vf_coef and
+# net_arch are the winner's own values, taken because the two disagreed and it
+# scored higher, not because the difference is resolved.
 #
 # ONE DELIBERATE DEVIATION FROM THE TRIAL. The winning trial ran n_envs 8 with
-# n_steps 1024; this config runs n_envs 32 with n_steps 256. PPO's rollout is
-# n_steps * n_envs, so both are 8192 transitions per update, and with
-# batch_size 1024 both give 8 minibatches over 5 epochs. The rollout is also
-# gathered from 32 environments instead of 8, which decorrelates it, and the
-# env stepping runs ~3x faster on this 128-core box. n_steps here is therefore
-# NOT the swept value read literally; the swept value is 1024 at n_envs 8, and
-# the pair has to move together.
+# n_steps 4096; this runs n_envs 32 with n_steps 1024. PPO's rollout is
+# n_steps * n_envs, so both are 32,768 transitions per update, and at
+# batch_size 1024 both give 32 minibatches over 20 epochs. Wider is ~2x faster
+# on this box (measured 801 env-steps/s against 376 at n_envs 8) and
+# decorrelates the rollout. n_steps here is therefore NOT the swept value read
+# literally; the pair has to move together.
 #
-# NOT quite identical, though. GAE runs per environment over each env's own
-# slice of the rollout, so this config estimates advantages over 32 segments
-# of 256 steps where the trial used 8 of 1024, and every segment boundary
-# bootstraps off the value function rather than continuing the trace. At the
-# tuned gamma 0.9995 and gae_lambda 0.9288 the trace decays with a ~14-step
-# effective horizon, so the truncation touches ~5.5% of samples here against
-# ~1.4% at the trial's shape. Small, and the direction is more value-function
-# bias rather than less, but it is a real difference: the sample budget and
-# the minibatch structure carry over exactly, the advantage estimator does not.
-#
-# CAVEAT ON THE OBJECTIVE. No trial in this sweep docked, and none beat a
-# zero-thrust policy, which scores -4,642 on the same eval seeds
-# (pocs/null_action_baseline.py). The objective therefore ranked trials by how
-# reliably they stay put rather than by any progress toward the port, and this
-# winner is the most reliably passive of 36 rather than the best docking
-# policy. It is the correct frozen artefact for the sweep that produced it;
-# it is not evidence that the task is being learned.
+# GAE is not quite identical across that change: it runs per environment over
+# each env's slice, so advantages come from 32 segments of 1024 steps rather
+# than 8 of 4096, and every segment boundary bootstraps off the value function.
+# At gamma 0.997 and gae_lambda 0.945 the trace has a ~250-step effective
+# horizon, so truncation touches a larger share of samples here than at the
+# trial's shape. Real, and in the direction of more value-function bias.
 algo: ppo
-n_envs: 32          # with n_steps 256 this holds the trial's 8192 rollout
+n_envs: 32           # with n_steps 1024 this holds the trial's 32,768 rollout
 vec: subproc
-total_timesteps: 10000000
+# 100M at dt=1 s is 100M seconds of flight, ~278,000 episodes -- the scale
+# Broida and Linares (AAS 19-462) trained at (200,000 episodes) and within
+# range of Dunlap et al. (JAIS 20(1) 2023, 170M). Measured at 801 env-steps/s
+# this is ~35 h alone, ~43 h sharing the box with a SAC run.
+total_timesteps: 100000000
 device: cpu          # SB3 PPO+MlpPolicy is faster on CPU
 # vector: the 25-dim state alone. vector_resnet: that vector with a frozen
 # pretrained ResNet's embedding of the rendered frame concatenated onto it,
 # still one flat Box, so the policy stays MlpPolicy either way. vector_resnet
-# needs an env config that renders (see environments/iss_coop_goal_ports_render224).
+# needs an env config that renders (see environments/iss_numerical_ports_render224).
 obs: vector
 obs_resnet:          # read only when obs=vector_resnet
   variant: resnet18
@@ -56,36 +72,28 @@ obs_resnet:          # read only when obs=vector_resnet
 # Observations are always normalized (positions are O(100 m) against O(1e-3)
 # body rates). Reward normalization is its own switch and defaults OFF: the
 # shaped reward already costs ~1 per step at the envelope by construction,
-# while a single collision's -1e6 lands in the normalizer's running return
+# while a single event's spike lands in the normalizer's running return
 # variance and crushes every shaped reward that follows it.
-# How many environment steps each action is held for. 1 is one decision per
-# env step. Higher values shorten the decision sequence without touching the
-# physics: at dt=0.05 s and max_steps 7200 an episode is 7,200 decisions at 1
-# and 360 at 20, over the same six minutes of flight.
 #
-# Two things that fixes, both measured. A terminal reward 7,200 steps out is
-# worth gamma**7200 at the episode's start -- 2e-16 at gamma 0.995, zero in
-# float32 -- so the dock bonus is not merely small, it is absent, and holding
-# station is the correct answer to the reward the policy can see. And per-step
-# Gaussian exploration is uncorrelated, so the ~326-step commitment a 1 m/s
-# approach needs before it turns a profit essentially never survives; at 20 it
-# is 16 decisions. See baselines/rl/action_repeat.py.
-#
-# rl.total_timesteps, val.every_steps and checkpoint.save_freq are all in ENV
-# steps regardless of this, so a run's budget and cadences mean the same thing
-# at every setting.
+# action_repeat stays 1: the environment this is tuned on already takes one
+# decision per second, at dt 1.0 over a 360-step horizon, so there is no long
+# decision sequence left for it to shorten.
 action_repeat: 1
 norm_reward: false
 checkpoint:
-  save_freq: 100000  # total env steps between checkpoints
+  # 40 checkpoints over the budget, so a crash costs at most ~1 h of stepping.
+  # Affordable because a PPO checkpoint is the policy and its optimiser state
+  # and nothing else -- a few MB at this width, ~160 MB for the whole run.
+  save_freq: 2500000
 hyperparams:
-  n_steps: 256       # trial value was 1024 at n_envs 8; see header
+  n_steps: 1024      # trial value was 4096 at n_envs 8; see header
   batch_size: 1024
-  learning_rate: 2.7994785472181424e-05
-  gamma: 0.9995
-  gae_lambda: 0.9288495230098892
-  ent_coef: 0.0001467721015752794
-  clip_range: 0.3
-  n_epochs: 5
+  learning_rate: 0.00021578468144928557
+  gamma: 0.997
+  gae_lambda: 0.9453223308741135
+  ent_coef: 1.234637828477223e-08
+  clip_range: 0.1
+  n_epochs: 20
+  vf_coef: 0.6666451279183626
   policy_kwargs:
-    net_arch: [64, 64]
+    net_arch: [256, 256, 256]
