@@ -34,9 +34,23 @@ load_dotenv()
 CONF_DIR = str(Path(__file__).resolve().parents[4] / "conf")
 SWEEP_RUNS_DIR = Path("runs/sweeps")
 
-EVAL_REPORTS = 5
+# How many times a trial reports its objective before the final report. This
+# is the resolution hyperband bands on: a spec's min_iter counts reports, and
+# wandb's default eta of 3 puts its rungs at min_iter, 3 * min_iter, ... So
+# five reports leave room for a single rung at 60% of the horizon, which
+# prices a bad draw at most of a full trial. Ten put the first rung at 20%.
+#
+# A report costs one deterministic eval round -- EVAL_EPISODES episodes -- and
+# nothing else, which is seconds against the hours a trial spends training.
+EVAL_REPORTS = 10
 EVAL_EPISODES = 5
 FINAL_EVAL_EPISODES = 20
+# Val rounds keep their own, coarser cadence. A round flies episodes and draws
+# matplotlib figures for each, so it costs minutes where an eval report costs
+# seconds, and it is read by a human looking at a trajectory rather than by
+# hyperband looking at a series -- four points over a trial is what that
+# reading needs.
+VAL_ROUNDS = 4
 DEFAULT_MAX_SECONDS = 7200.0
 
 # Every trial's val rounds fly known-seed episodes, seeded SWEEP_VAL_SEED,
@@ -235,6 +249,11 @@ def eval_cadence(total_timesteps: int) -> int:
     return max(total_timesteps // EVAL_REPORTS, 1)
 
 
+def val_cadence(total_timesteps: int) -> int:
+    """Steps between val rounds, on their own cadence rather than the eval one."""
+    return max(total_timesteps // VAL_ROUNDS, 1)
+
+
 def prune_trial_artifacts(run_dir: Path) -> None:
     """Drop what only a resume would want, keeping the final model and stats.
 
@@ -304,9 +323,9 @@ def main() -> None:
             episodes = int(
                 os.environ.get(SWEEP_VAL_EPISODES_VAR, DEFAULT_SWEEP_VAL_EPISODES)
             )
-            # Plot-only trajectory diagnostics on the objective-report
-            # cadence. The final plot round is owed by whichever callback
-            # runs last: the video one when video is on, this one otherwise.
+            # Plot-only trajectory diagnostics. The final plot round is owed
+            # by whichever callback runs last: the video one when video is on,
+            # this one otherwise.
             callbacks.append(
                 ValEpisodeCallback(
                     run_dir=run_dir,
@@ -314,7 +333,7 @@ def main() -> None:
                     seed=SWEEP_VAL_SEED,
                     episodes=episodes,
                     video_episodes=0,
-                    every_steps=eval_cadence(total),
+                    every_steps=val_cadence(total),
                     final=not video,
                 )
             )

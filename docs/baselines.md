@@ -38,27 +38,59 @@ to other tenants. It then runs `wandb agent`, which pulls and runs one trial
 (`owm.baselines.rl.sweep_trial`) at a time until stopped.
 
 **Objective.** Each spec's `metric.name` is `sweep/eval_mean_return`
-(`goal: maximize`), a deterministic-policy eval return, reported five times
-over the trial plus once more at the end — not the SB3 training loss,
-because the loss's scale and meaning change with the hyperparameters being
-swept (a different `clip_range` or `tau` changes what the loss *is*, not
-just its value), while a deterministic eval return measures the same thing
-— actual docking behavior — regardless of what produced the policy.
+(`goal: maximize`), a deterministic-policy eval return, reported
+`EVAL_REPORTS` times over the trial plus once more at the end — not the SB3
+training loss, because the loss's scale and meaning change with the
+hyperparameters being swept (a different `clip_range` or `tau` changes what
+the loss *is*, not just its value), while a deterministic eval return measures
+the same thing — actual docking behavior — regardless of what produced the
+policy.
+
+Mean return rather than `sweep/eval_safe_min_pos_m`, the closure objective, on
+two grounds. The vector specs hold the reward weights fixed, so returns are
+comparable across their trials in the first place. And under the soft keep-out
+zone `collision_terminates` is false, so `info["collision"]` means "inside the
+hull on this step" rather than "this episode ended by crashing" — closure
+voids an episode's credit on that flag, which now reads where an episode
+happened to finish rather than whether it survived. Closure stays logged on
+every report, so it can still be read after the fact; it is the right
+objective for a spec that searches over reward weights, which these do not.
 
 **Hyperband pruning.** Both specs set `early_terminate: {type: hyperband,
-min_iter: 3}` — a trial must have reported its objective 3 times before
-hyperband will prune it against other trials at the same rung; that count is
-in objective reports, not steps or epochs.
+min_iter: 2}` — a trial must have reported its objective twice before
+hyperband will prune it against others at the same rung; that count is in
+objective reports, not steps or epochs. `sweep_trial.EVAL_REPORTS` sets how
+many reports a trial makes over its horizon (10), so at wandb's default eta
+of 3 the rungs land at reports 2 and 6 — 20% and 60% of the horizon. The
+first rung is what prices a bad draw: a trial killed there spent a fifth of a
+full one. It also sits well past the longest `learning_starts` either spec can
+draw, so no trial is banded before it has taken a gradient step.
 
-**Trial horizon.** Both `sweeps/ppo_vector.yaml` and `sweeps/sac_vector.yaml`
-pin `trial_timesteps: 500000`.
+Val rounds keep their own coarser cadence (`sweep_trial.VAL_ROUNDS`, 4): a
+round flies episodes and draws matplotlib figures for each, so it costs
+minutes where an eval report costs seconds, and it is read by a human looking
+at a trajectory rather than by hyperband looking at a series.
+
+**Trial horizon.** `sweeps/ppo_vector.yaml` pins `trial_timesteps: 4000000`
+and `sweeps/sac_vector.yaml` `1500000`. Both are sized from measured
+throughput on the training host — 376 env-steps/s for PPO at `n_envs` 8 and
+119 for SAC at `n_envs` 4 and the densest update ratio its space allows — so
+a full-length trial is roughly three hours either way. Re-measure before
+assuming they transfer to another machine.
 
 **Forced settings**, from `sweep_trial.py`'s `build_cfg` (verified against
 that source, not paraphrased from memory):
 
-- `environments=iss_numerical_ports` is forced at compose time — every trial
-  tunes hyperparameters against the training environment of record: the
-  `iss-numerical` env on the random 5-port goal distribution.
+- The environment comes from the spec's own `environments` parameter, falling
+  back to `sweep_trial.DEFAULT_ENVIRONMENTS` (`iss_numerical_ports`) for a
+  spec that names none. Both vector specs pin
+  `iss_numerical_ports_dense_1hz`: the `iss-numerical` env on the random
+  5-port goal distribution, with the dense-dominant reward and soft keep-out
+  zone, flown at a 1 s control step. The dense terms carry the task, so a
+  trial's score reflects how it flies rather than whether a terminal bonus
+  survived the discount; and one decision per second over a 360 s episode is
+  360 decisions rather than 7,200, the cadence both reference results trained
+  at.
 - Resources are fixed per algorithm and **not** tunable, overwritten after
   hydra composes the base `rl=<algo>` config: PPO gets `n_envs=8,
   vec=subproc, device=cpu`; SAC gets `n_envs=4, vec=subproc,
@@ -145,30 +177,30 @@ just train-sac rl=sac_tuned environments=iss_numerical_ports
 configs — any reported final baseline number should trace back to a run
 launched from one of them, not from a sweep trial or the untuned defaults.
 
-**Status.** The vector sweeps were rerun against `iss_numerical_ports` and
-both winners were refrozen on 2026-08-13: `ppo_vector` sweep `2gpo2vfy`
-(winner `daily-sweep-29`, −4,967 over 36 trials) and `sac_vector` sweep
-`rnuijnos` (winner `vague-sweep-21`, −9,257 over 29 trials). These replace
-the 2026-08-08 freezes from `h4be1smz` / `a5kxxtk2`, which predated both the
-`iss-numerical` retarget and the reward reshape. The pixel sweeps
-(`ppo_resnet`, `sac_resnet`) remain deferred.
+**Status.** `conf/rl/ppo_tuned.yaml` and `conf/rl/sac_tuned.yaml` currently
+hold winners frozen on 2026-08-13 from sweeps run against
+`iss_numerical_ports` — the base reward at a 50 ms step: `ppo_vector` sweep
+`2gpo2vfy` (winner `daily-sweep-29`, −4,967 over 36 trials) and `sac_vector`
+sweep `rnuijnos` (winner `vague-sweep-21`, −9,257 over 29 trials). Neither
+produced a docking policy: `sweep/final_success` is 0 for every trial in
+both, closest approach never fell below the episode's own start range, and no
+trial beat a zero-thrust policy on the same eval seeds. The only behaviour
+that varied was how far a policy drifted toward the 750 m escape boundary, so
+the objective ranked configs by reliable passivity. Those freezes are correct
+records of their sweeps and the wrong thing to read as tuned docking
+baselines; they stand until the sweeps against `iss_numerical_ports_dense_1hz`
+conclude and produce winners to replace them. The pixel sweeps (`ppo_resnet`,
+`sac_resnet`) remain deferred.
 
-**Read the objective with care.** Neither sweep produced a docking policy:
-`sweep/final_success` is 0 for every trial in both, closest approach never
-fell below the episode's own start range, and no trial beat a zero-thrust
-policy, which scores −4,642 on the same eval seeds
-(`pocs/null_action_baseline.py`). The only behaviour that varied across
-trials was how far a policy drifted toward the 750 m escape boundary, so the
-objective ranked configs by reliable passivity. The frozen winners are
-correct records of their sweeps and the wrong thing to read as tuned docking
-baselines.
-
-`environments=iss_numerical_ports_approach` carries a reward reweighting
-aimed at that failure — weight shifted from the velocity term to the
-position term, and a collision penalty softened as far as
-`RewardWeights`' coin-flip invariant allows — so an approach becomes
-locally profitable within ~45 steps instead of ~326
-(`pocs/reward_gradient.py`).
+**Read the objective against a null policy.** A return only means something
+next to what doing nothing is worth on the same episodes.
+`pocs/null_action_baseline.py` flies the final report's protocol — 20
+episodes at seeds 10,000, 10,001, ... with a constant zero action — and
+prints the three numbers a trial is scored on. On
+`iss_numerical_ports_dense_1hz` it scores **−405.4** mean return, 0% success,
+and 270 m closure against a 100–500 m start shell. Run it whenever the reward
+or the control step changes; the figure is a property of both, and a trial
+that does not beat it learned nothing.
 
 ## Telemetry
 
