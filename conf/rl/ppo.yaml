@@ -18,6 +18,23 @@ obs_resnet:          # read only when obs=vector_resnet
 # shaped reward already costs ~1 per step at the envelope by construction,
 # while a single collision's -1e6 lands in the normalizer's running return
 # variance and crushes every shaped reward that follows it.
+# How many environment steps each action is held for. 1 is one decision per
+# env step. Higher values shorten the decision sequence without touching the
+# physics: at dt=0.05 s and max_steps 7200 an episode is 7,200 decisions at 1
+# and 360 at 20, over the same six minutes of flight.
+#
+# Two things that fixes, both measured. A terminal reward 7,200 steps out is
+# worth gamma**7200 at the episode's start -- 2e-16 at gamma 0.995, zero in
+# float32 -- so the dock bonus is not merely small, it is absent, and holding
+# station is the correct answer to the reward the policy can see. And per-step
+# Gaussian exploration is uncorrelated, so the ~326-step commitment a 1 m/s
+# approach needs before it turns a profit essentially never survives; at 20 it
+# is 16 decisions. See baselines/rl/action_repeat.py.
+#
+# rl.total_timesteps, val.every_steps and checkpoint.save_freq are all in ENV
+# steps regardless of this, so a run's budget and cadences mean the same thing
+# at every setting.
+action_repeat: 1
 norm_reward: false
 checkpoint:
   save_freq: 100000  # total env steps between checkpoints

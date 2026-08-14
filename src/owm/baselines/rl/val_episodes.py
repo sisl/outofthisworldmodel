@@ -131,6 +131,7 @@ class ValEpisodeCallback(BaseCallback):
         at_steps: tuple[int, ...] = (),
         final: bool = False,
         max_frames: int = 1200,
+        action_repeat: int = 1,
     ):
         super().__init__()
         # All caught at registration, i.e. at launch: a bad budget or an
@@ -144,6 +145,9 @@ class ValEpisodeCallback(BaseCallback):
             raise ValueError(f"every_steps must be >= 1, got {every_steps}")
         if episodes < 1:
             raise ValueError(f"episodes must be >= 1, got {episodes}")
+        # Must match training's: a val episode flown at a different decision
+        # cadence measures a different policy than the one being trained.
+        self._action_repeat = action_repeat
         if not 0 <= video_episodes <= episodes:
             raise ValueError(
                 f"video_episodes must be in [0, episodes], got {video_episodes} "
@@ -316,7 +320,7 @@ class ValEpisodeCallback(BaseCallback):
         if self._env is None:
             # Held for the run: a vector-observation env costs nothing to
             # keep, unlike the renderer.
-            self._env = make_env(cfg, seed=self._seed)
+            self._env = make_env(cfg, seed=self._seed, action_repeat=self._action_repeat)
         env = self._env
         record_video = renderer is not None and index < self._video_episodes
         limits = np.array(

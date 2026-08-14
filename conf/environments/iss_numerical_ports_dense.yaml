@@ -1,0 +1,84 @@
+# Dense-dominant reward with a SOFT keep-out zone. Same dynamics, ports,
+# perturbations, observation and 0.1 m dock gate as the base config, so a run
+# here is comparable to one on iss_numerical_ports state for state. Only the
+# reward and the collision termination differ.
+#
+# WHY. Every variant to date converges to holding station, and the arithmetic
+# says that is the correct answer to the reward as posed rather than a failure
+# to find the port. A terminal reward 7,200 steps out is worth gamma**7200 at
+# the start of an episode: 2.1e-16 at gamma 0.995, which is zero in float32,
+# and 7.4e-4 at 0.999. The +10,000 dock bonus is not merely outweighed by the
+# shaped cost, it is ABSENT from the objective the policy optimises, while the
+# per-step shaping it can see accumulates thousands over the same horizon. The
+# reward was, in effect, "sit still", and the policies learned it.
+#
+# So this config puts the signal where the discount can reach it: the dense
+# terms carry the task, and the events become small corrections rather than
+# the whole objective. That is the shape Broida and Linares (AAS 19-462) flew
+# to centimetre accuracy -- their reward is -||state error|| per step with a
+# success bonus of +1, three to four orders of magnitude below the per-step
+# term, and it works because the dense gradient never needs discounting to
+# survive.
+#
+# This is meant to be flown with rl.action_repeat > 1. The dense terms reach
+# the policy at any cadence, but `escape` and `dock_success` are still
+# absorbing events at the end of a 7,200-step horizon, and at one decision per
+# step nothing at that range is visible either.
+defaults:
+  - iss_numerical_ports
+  - _self_
+
+# The keep-out zone becomes a soft constraint: hitting the hull is charged per
+# step and the episode flies on. An absorbing collision is the harshest credit
+# assignment available for the one manoeuvre the task requires -- the port sits
+# ON the hull, so every approach that could succeed passes within metres of the
+# thing that ends the episode, and the steps that would teach the difference
+# between a near miss and a hit are exactly the ones never collected.
+collision_terminates: false
+
+reward_weights:
+  # The four shaped terms still sum to 1, preserving the pseudo-Huber
+  # normalisation the reward module documents, and position still dominates:
+  # closing the range is the task, and the velocity term is what made the first
+  # step of an approach cost more than it earned for ~326 steps.
+  position: -0.9
+  velocity: -0.05
+  # Orientation is deliberately the least dense of the four. It is also gated
+  # by range (see reward_shaping.rotation_gate_far below), so far from the port
+  # -- where the task is purely to close -- it is weaker still. Both are here
+  # rather than inherited so the density is one edit, and sweepable.
+  attitude: -0.03
+  body_rate: -0.02
+
+  # PER STEP inside the hull, not once at impact, because the collision no
+  # longer ends anything. The shaped terms are normalised to ~1 at the edge of
+  # the operating envelope, so -2 makes a step spent in the station cost a few
+  # times an ordinary one: enough that lingering there is never worth it,
+  # small enough that brushing the hull while learning to fly is survivable and
+  # informative. It is also the value the paper above used, against a per-step
+  # term of the same relative size.
+  collision: -2.0
+
+  # A tiebreaker now, not the objective. All four shaped terms bottom out at
+  # zero, so a chaser hovering just outside the gate scores the same ~0 as one
+  # that docks; this is what separates them. It does not need to be large --
+  # docking also ENDS the episode, which stops the shaped cost accruing, and
+  # that is most of what makes arriving worth more than parking.
+  dock_success: 1000.0
+
+  # Unchanged, and still absorbing: leaving the domain stops the episode paying
+  # the shaped cost it would otherwise owe to the horizon, so an unpenalised
+  # exit scores above any flight continued in bounds. That is the failure the
+  # earlier warm-started runs actually found -- 307 escapes in 5M steps -- and
+  # the term that prices it has to keep outweighing a full horizon of drift.
+  escape: -10000.0
+
+reward_shaping:
+  # The orientation density knob. The rotational pair is scaled by
+  #   far + (1 - far) / (1 + (distance / range)**2)
+  # so it is ~1 at the port and ~`far` well outside `range`. At 0.1 a chaser
+  # 200 m out feels a tenth of the pointing pressure it feels at the gate,
+  # which is the intended ordering: close first, then align. Raise it to make
+  # attitude matter earlier.
+  rotation_gate_far: 0.1
+  rotation_gate_range_m: 25.0

@@ -199,6 +199,7 @@ def make_env(
     render: bool = False,
     obs_mode: str = "vector",
     extractor: FrozenResnetExtractor | None = None,
+    action_repeat: int = 1,
 ) -> gym.Env:
     if obs_mode not in OBS_MODES:
         raise ValueError(f"unknown obs_mode {obs_mode!r}; expected one of {OBS_MODES}")
@@ -215,6 +216,16 @@ def make_env(
         from owm.envs.resnet_obs import ResnetObservationWrapper
 
         env = ResnetObservationWrapper(env, extractor)
+    # Innermost of the RL wrappers, so everything above it -- the action
+    # rescale, Monitor's episode statistics, SB3's step counter -- works in
+    # decisions rather than env steps, which is the cadence the policy is
+    # actually trained and evaluated at. Applied here rather than per call
+    # site so a val or eval env can never end up running a different cadence
+    # than the policy was trained on.
+    if action_repeat > 1:
+        from owm.baselines.rl.action_repeat import ActionRepeat
+
+        env = ActionRepeat(env, action_repeat)
     # SB3's Gaussian (PPO) samples in raw action units; +-1600 N would need an
     # absurd init std, so policies act in [-1, 1] and the wrapper rescales.
     env = RescaleAction(env, min_action=-1.0, max_action=1.0)
@@ -260,6 +271,7 @@ def make_vec_env(
     vec: str = "subproc",
     obs_mode: str = "vector",
     resnet: dict | None = None,
+    action_repeat: int = 1,
 ) -> VecEnv:
     conf_dict = (
         OmegaConf.to_container(env_conf, resolve=True)
@@ -288,6 +300,7 @@ def make_vec_env(
                 seed=seed + rank,
                 obs_mode=obs_mode,
                 extractor=extractor,
+                action_repeat=action_repeat,
             )
 
         return _init
