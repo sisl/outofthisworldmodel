@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from owm.baselines.rl.sweep_callbacks import OBJECTIVE
+from owm.baselines.rl.sweep_callbacks import OBJECTIVES
 from owm.baselines.rl.sweep_trial import PIXEL_N_ENVS, RESERVED_KEYS, RESOURCES
 from owm.baselines.rl.train import ALGOS
 
@@ -30,7 +30,13 @@ def test_a_spec_exists_for_every_algo():
 def test_sweep_spec_asks_for_a_bayes_search_on_the_eval_objective(name):
     body = spec(name)
     assert body["method"] == "bayes"
-    assert body["metric"] == {"name": OBJECTIVE, "goal": "maximize"}
+    # One of the objectives the trial actually reports, paired with the only
+    # direction that objective can be read in: a spec asking to maximize a
+    # distance-to-goal, or to optimise a key nothing logs, would run a whole
+    # sweep and rank it on nothing.
+    metric = body["metric"]
+    assert metric["name"] in OBJECTIVES, metric["name"]
+    assert metric["goal"] == OBJECTIVES[metric["name"]], metric
     assert body["early_terminate"]["type"] == "hyperband"
     assert body["early_terminate"]["min_iter"] >= 1
     assert body["parameters"]["algo"]["value"] in ALGOS

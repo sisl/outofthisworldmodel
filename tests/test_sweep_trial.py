@@ -247,7 +247,7 @@ def test_the_eval_env_is_the_one_the_run_recorded_training_on(tmp_path: Path):
     callback.model = _ZeroPolicy(action_dim=6)
 
     try:
-        mean_return, success_rate, _final_errors, _min_errors = callback._evaluate(episodes=1)
+        mean_return, success_rate, _final, _mins, _closure = callback._evaluate(episodes=1)
         # Truncated by the recorded horizon, not by any default of the sweep's.
         assert callback._env.get_attr("unwrapped")[0].cfg.max_steps == 4
         assert isinstance(mean_return, float)

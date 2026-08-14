@@ -24,6 +24,22 @@ from owm.envs.factory import (
 OBJECTIVE = "sweep/eval_mean_return"
 STEP_METRIC = "sweep/global_step"
 
+# The alternative objective, for a sweep whose search space includes the
+# reward weights themselves. Mean return is measured in the trial's own reward
+# units, so a trial that was handed a bigger dock bonus or a smaller collision
+# penalty scores higher without behaving any better -- the sweep would rank
+# reward configs rather than policies. This one is in metres and reads the
+# same for every trial.
+#
+# It is closure, not raw minimum range: an episode that ends in a collision or
+# an escape contributes the distance it STARTED at, so it earns no credit for
+# how close it got. Raw minimum range would be gamed by flying into the hull,
+# since the port sits on it -- and given the last sweep crowned the policy
+# that most reliably does nothing, an objective with a cheap degenerate
+# maximum is the specific failure worth designing out.
+CLOSURE_OBJECTIVE = "sweep/eval_safe_min_pos_m"
+OBJECTIVES = {OBJECTIVE: "maximize", CLOSURE_OBJECTIVE: "minimize"}
+
 # Widest the eval env gets. The periodic report is 5 episodes, so 5 envs run it
 # in one round and the 20-episode final one in four, while the training workers
 # are idle anyway.
@@ -125,7 +141,9 @@ class EvalReportCallback(BaseCallback):
 
     def _report(self, episodes: int, final: bool) -> None:
         try:
-            mean_return, success_rate, final_errors, min_errors = self._evaluate(episodes)
+            mean_return, success_rate, final_errors, min_errors, closure = self._evaluate(
+                episodes
+            )
         finally:
             # In a finally so a failed eval does not strand the pool either:
             # under vector_resnet those are GPU contexts, and the trial has
@@ -149,17 +167,23 @@ class EvalReportCallback(BaseCallback):
             payload["sweep/eval_min_vel_mps"] = min_errors["vel_mps"]
             payload["sweep/eval_min_att_rad"] = min_errors["att_rad"]
             payload["sweep/eval_min_rate_radps"] = min_errors["rate_radps"]
+        # Logged on every report whatever the spec is optimising, so the two
+        # objectives can be read against each other after the fact.
+        if closure is not None:
+            payload[CLOSURE_OBJECTIVE] = closure
         if final:
             # Same number under a name no intermediate report ever writes, so
             # the finished-trial value can be read back without guessing which
             # history row was the last one.
             payload["sweep/final_mean_return"] = mean_return
             payload["sweep/final_success"] = success_rate
+            if closure is not None:
+                payload["sweep/final_safe_min_pos_m"] = closure
         wandb.log(payload)
 
     def _evaluate(
         self, episodes: int
-    ) -> tuple[float, float, dict[str, float] | None, dict[str, float] | None]:
+    ) -> tuple[float, float, dict[str, float] | None, dict[str, float] | None, float | None]:
         venv = self._eval_env()
         # The policy sees normalized observations in training, so evaluating it
         # on raw ones would measure a transform mismatch, not the policy.
@@ -169,21 +193,30 @@ class EvalReportCallback(BaseCallback):
         successes: list[bool] = []
         finals: list[dict[str, float]] = []
         mins: list[dict[str, float]] = []
+        closures: list[float] = []
         # Episodes run a vec-width at a time. One at a time left the training
         # workers idle and made a report cost more than the training it was
         # reporting on.
         for first in range(0, episodes, venv.num_envs):
             batch = min(venv.num_envs, episodes - first)
-            batch_returns, batch_successes, batch_finals, batch_mins = self._rollout(
-                venv, vecnorm, first
+            batch_returns, batch_successes, batch_finals, batch_mins, batch_closures = (
+                self._rollout(venv, vecnorm, first)
             )
             returns.extend(batch_returns[:batch])
             successes.extend(batch_successes[:batch])
             finals.extend(error for error in batch_finals[:batch] if error is not None)
             mins.extend(error for error in batch_mins[:batch] if error is not None)
+            closures.extend(value for value in batch_closures[:batch] if value is not None)
         mean_return = float(np.mean(returns))
         success_rate = sum(successes) / episodes
-        return mean_return, success_rate, self._aggregate(finals), self._aggregate(mins)
+        closure = float(np.mean(closures)) if closures else None
+        return (
+            mean_return,
+            success_rate,
+            self._aggregate(finals),
+            self._aggregate(mins),
+            closure,
+        )
 
     @staticmethod
     def _aggregate(records: list[dict[str, float]]) -> dict[str, float] | None:
@@ -208,6 +241,10 @@ class EvalReportCallback(BaseCallback):
         success = np.zeros(width, dtype=bool)
         mins = [self._fresh_minima() for _ in range(width)]
         finals: list[dict[str, float] | None] = [None] * width
+        # For the closure objective: where each episode began, and whether it
+        # ended somewhere that should void its closure credit.
+        starts: list[float | None] = [None] * width
+        unsafe = np.zeros(width, dtype=bool)
         # A vec env auto-resets a finished env, so anything it reports after
         # that belongs to an episode nobody asked for.
         live = np.ones(width, dtype=bool)
@@ -221,12 +258,17 @@ class EvalReportCallback(BaseCallback):
             for index in np.flatnonzero(live):
                 error = self._goal_error(infos[index])
                 if error is not None:
+                    if starts[index] is None:
+                        starts[index] = error["pos_m"]
                     for key in GOAL_ERROR_KEYS:
                         if error[key] < mins[index][key]:
                             mins[index][key] = error[key]
             for index in np.flatnonzero(live & dones):
                 success[index] = bool(infos[index].get("success"))
                 finals[index] = self._goal_error(infos[index])
+                unsafe[index] = bool(infos[index].get("collision")) or bool(
+                    infos[index].get("escaped")
+                )
             live &= ~dones
             if self._max_episode_steps is not None and steps >= self._max_episode_steps:
                 break
@@ -234,7 +276,15 @@ class EvalReportCallback(BaseCallback):
         # had a goal_error_true to track; otherwise it is still the untouched
         # all-inf sentinel.
         episode_mins = [mins[i] if finals[i] is not None else None for i in range(width)]
-        return ep_return.tolist(), success.tolist(), finals, episode_mins
+        # An unsafe episode scores its start, so closing on the hull and
+        # hitting it is worth exactly as much as never having left.
+        closures = [
+            None
+            if finals[i] is None or starts[i] is None
+            else (starts[i] if unsafe[i] else mins[i]["pos_m"])
+            for i in range(width)
+        ]
+        return ep_return.tolist(), success.tolist(), finals, episode_mins, closures
 
     def _goal_error(self, info: dict) -> dict[str, float] | None:
         if "goal_error_true" not in info:

@@ -84,10 +84,24 @@ ALGO_KEY = "algo"
 # of it that renders at the extractor's input size.
 ENVIRONMENTS_KEY = "environments"
 DEFAULT_ENVIRONMENTS = "iss_numerical_ports"
+#   demo_*         -> rl.demo.*  (the pre-flown warm-start block)
+#   dock_success   -> environments.reward_weights.dock_success
+#   collision_penalty -> environments.reward_weights.collision
+#
+# The reward weights are routable because a sweep may legitimately search over
+# them, but doing so only means anything against a reward-independent
+# objective -- see CLOSURE_OBJECTIVE in sweep_callbacks.
 ROUTES = {
     "trial_timesteps": "rl.total_timesteps",
     "obs": "rl.obs",
     "seed": "seed",
+    "demo_repo_id": "rl.demo.repo_id",
+    "demo_split": "rl.demo.split",
+    "demo_max_transitions": "rl.demo.max_transitions",
+    "demo_protected_fraction": "rl.demo.protected_fraction",
+    "demo_bc_steps": "rl.demo.bc_steps",
+    "dock_success": "environments.reward_weights.dock_success",
+    "collision_penalty": "environments.reward_weights.collision",
 }
 RESERVED_KEYS = frozenset({ALGO_KEY, ENVIRONMENTS_KEY, *ROUTES})
 

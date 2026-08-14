@@ -1,0 +1,131 @@
+# wandb Bayesian sweep over demonstration-warm-started SAC on the ISS docking
+# env, vector observations, approach reward variant.
+#
+#   just sweep-init sac_demo            # prints the sweep id
+#   just sweep-agent <id> sac_demo 0    # one agent, on GPU 0
+#
+# The GPU argument is not optional in practice: the recipe defaults to 2, and
+# which physical devices are free is a property of the host, not of the spec.
+#
+# WHAT THIS SWEEP IS FOR. Four hand-picked 5M-step runs established that
+# seeding the replay buffer with pre-flown trajectories changes behaviour and
+# that holding a protected demo share stops the policy drifting into the
+# escape basin (307 escapes to 0), but none of them docked, and the protected
+# variant stopped escaping by learning to sit still -- its closest approach
+# was 0.99 of the radius it started at. Those runs fixed protected_fraction at
+# 0.25, bc_steps at 20k and the reward at the approach variant's weights; this
+# searches all three together.
+#
+# WHY THE OBJECTIVE IS NOT MEAN RETURN. The search space includes the reward
+# weights, so mean return is not comparable across trials: a trial handed
+# dock_success 200,000 scores higher than one handed 10,000 for identical
+# flying. sweep/eval_safe_min_pos_m is in metres, from a fixed eval seed every
+# trial shares, and voids an episode's closure credit if it ends in a collision
+# or an escape -- so it cannot be won by diving at the hull (the port is ON the
+# hull, so raw minimum range would reward exactly that) or by drifting away.
+# The previous sac_vector sweep crowned the policy that most reliably does
+# nothing; an objective whose cheap degenerate maximum is "hold station" is the
+# specific thing being designed out here.
+#
+# WHY THE REWARD WEIGHTS ARE IN THE SPACE AT ALL. conf/environments/
+# iss_numerical_ports_approach.yaml leaves dock_success at the base 10,000 on
+# the stated grounds that "raising a reward the policy has never once
+# collected changes nothing about what it learns from". A protected demo store
+# retires that argument: the critic now regresses against 13 docked terminal
+# transitions in every batch, permanently, so dock_success sets the target
+# value of a docked state whether or not the policy ever reaches one. At the
+# current pair (+10,000 dock against -30,000 collision) an approach has to be
+# better than 55% reliable before it beats holding station -- a bar the policy
+# cannot clear before it has learned the thing the bar is gating.
+#
+# These specs live outside conf/ because they are wandb sweep files, not hydra
+# configs: a conf/sweep/ directory would appear in hydra's group discovery and
+# read as a config group nothing ever selects.
+program: src/owm/baselines/rl/sweep_trial.py
+command:
+  - ${env}
+  - uv
+  - run
+  - python
+  - -m
+  - owm.baselines.rl.sweep_trial
+method: bayes
+metric:
+  name: sweep/eval_safe_min_pos_m
+  goal: minimize
+early_terminate:
+  type: hyperband
+  min_iter: 3   # in reports, not epochs: roughly one per 100k steps
+parameters:
+  algo:
+    value: sac
+  environments:
+    # The reshaped variant, whose shaping weights make the first step of an
+    # approach pay back in ~45 steps rather than ~326. The two reward terms
+    # this sweep searches are overridden on top of it per trial.
+    value: iss_numerical_ports_approach
+  seed:
+    value: 0
+  trial_timesteps:
+    # Same horizon as sac_vector. The variants' behaviour diverged well inside
+    # 500k in the hand-picked runs -- escapes had already separated them by
+    # then -- and the closure objective reads a difference earlier than mean
+    # return does.
+    value: 500000
+
+  # --- the warm start ---
+  demo_repo_id:
+    value: sislaboratory/owm-iss-numerical-v1-coop-goal-dt50ms-500k
+  demo_protected_fraction:
+    # 0.0 is the plain seeded buffer, whose demo share decays to nothing; the
+    # rest hold it fixed. 0.25 is what the hand-picked runs used, so the two
+    # above it are the untested direction.
+    values: [0.0, 0.25, 0.5, 0.75]
+  demo_bc_steps:
+    # Actor pre-training against the demonstrators' actions. On its own it did
+    # not stop the escapes; the question is whether it helps once the demo
+    # share is also held.
+    values: [0, 20000, 50000]
+
+  # --- the reward terms the warm start makes worth searching ---
+  dock_success:
+    values: [10000.0, 50000.0, 200000.0]
+  collision_penalty:
+    # -30,000 is the approach variant's value, chosen to keep a coin-flip
+    # approach losing against passivity. That invariant assumed the policy had
+    # no way to be better than a coin flip; the demos are the way.
+    values: [-30000.0, -10000.0, -3000.0]
+
+  # --- SAC itself ---
+  learning_rate:
+    distribution: log_uniform_values
+    min: 1.0e-5
+    max: 1.0e-3
+  tau:
+    distribution: log_uniform_values
+    min: 1.0e-3
+    max: 2.0e-2
+  gamma:
+    # dt=50 ms, so even 0.995 only looks ~10 s ahead; lower is myopic here.
+    values: [0.995, 0.999, 0.9995]
+  batch_size:
+    values: [256, 512, 1024]
+  train_freq:
+    values: [1, 4, 8]
+  gradient_steps:
+    values: [1, 4, 8]
+  policy_kwargs:
+    values:
+      - {net_arch: [256, 256]}
+      - {net_arch: [512, 512]}
+      - {net_arch: [256, 256, 256]}
+  learning_starts:
+    # Pinned, not swept: the buffer is already full of demonstrations before
+    # step one, so the interval this normally protects -- learning from an
+    # empty buffer -- does not exist in this lane.
+    value: 5000
+  buffer_size:
+    # Pinned above the demo set's ~493k transitions. sac_vector's 300k option
+    # would silently evict most of the warm start, which is the one thing
+    # every trial here is supposed to have.
+    value: 1000000

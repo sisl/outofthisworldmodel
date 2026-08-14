@@ -62,7 +62,7 @@ def test_rollout_tracks_episode_minimum_separately_from_final():
     # farther out (pos_m=5.0), so final and minimum must differ.
     venv = _FakeVecEnv([[_info(pos_m=1.0), _info(pos_m=5.0)]])
 
-    _, _, finals, mins = callback._rollout(venv, vecnorm=None, first_episode=0)
+    _, _, finals, mins, _ = callback._rollout(venv, vecnorm=None, first_episode=0)
 
     assert finals[0]["pos_m"] == 5.0
     assert mins[0]["pos_m"] == 1.0
@@ -72,11 +72,35 @@ def test_rollout_disables_diagnostics_when_goal_error_true_missing(capsys):
     callback = _callback()
     venv = _FakeVecEnv([[{"success": False}, {"success": True}]])
 
-    _, _, finals, mins = callback._rollout(venv, vecnorm=None, first_episode=0)
+    _, _, finals, mins, _ = callback._rollout(venv, vecnorm=None, first_episode=0)
 
     assert finals == [None]
     assert mins == [None]
     assert "WARNING" in capsys.readouterr().out
+
+
+def test_a_safe_episode_scores_its_closest_approach():
+    callback = _callback()
+    venv = _FakeVecEnv([[_info(pos_m=100.0), _info(pos_m=4.0), _info(pos_m=9.0)]])
+
+    *_, closures = callback._rollout(venv, vecnorm=None, first_episode=0)
+
+    assert closures[0] == 4.0
+
+
+@pytest.mark.parametrize("outcome", ["collision", "escaped"])
+def test_an_unsafe_episode_scores_its_start_not_its_closest_approach(outcome):
+    # The port sits on the hull, so a policy that dives at the station reaches
+    # a tiny minimum range and then hits it. Scoring the minimum would make
+    # that the best trial in the sweep.
+    callback = _callback()
+    end = _info(pos_m=0.2)
+    end[outcome] = True
+    venv = _FakeVecEnv([[_info(pos_m=100.0), _info(pos_m=0.5), end]])
+
+    *_, closures = callback._rollout(venv, vecnorm=None, first_episode=0)
+
+    assert closures[0] == 100.0
 
 
 def test_rollout_warns_only_once_across_calls(capsys):
