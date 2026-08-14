@@ -30,6 +30,22 @@ just sweep-agent <sweep_id> sac_vector   # one agent, on GPU 2
 just sweep-agent <sweep_id> sac_vector 3 # a second agent, on GPU 3
 ```
 
+**Running a fleet.** One agent runs one trial at a time, so covering a search
+space overnight means several side by side. `just sweep-fleet <sweep_id>
+<spec> <count> [gpus]` launches `count` detached agents, round-robin over the
+GPU list for a `sac_*` spec and CPU-only for a `ppo_*` one, logging each to
+`runs/logs/<spec>-<sweep_id>-<n>.log` and recording its pid in
+`runs/logs/sweep-fleet.pids`. `just sweep-fleet-stop` SIGINTs every recorded
+agent; see "Stopping agents at a deadline" below for what that does to the
+trial in flight.
+
+The binding resource is CPU, not GPU: every env worker is a process
+integrating the dynamics, while a SAC learner asks little of a card and a PPO
+learner never touches one. The recipe caps each learner's thread count for the
+same reason — env workers pin themselves to one thread each, but left at
+torch's default every learner in a fleet claims a thread per core, and they
+spend the night contending rather than training.
+
 `sweep-init` creates a wandb Bayesian sweep from `sweeps/<name>.yaml`.
 `sweep-agent` pins devices off the spec's `ppo_*`/`sac_*` prefix:
 `CUDA_VISIBLE_DEVICES=""` for PPO, and for SAC a single GPU out of 2/3, the
@@ -47,14 +63,23 @@ the same thing — actual docking behavior — regardless of what produced the
 policy.
 
 Mean return rather than `sweep/eval_safe_min_pos_m`, the closure objective, on
-two grounds. The vector specs hold the reward weights fixed, so returns are
-comparable across their trials in the first place. And under the soft keep-out
-zone `collision_terminates` is false, so `info["collision"]` means "inside the
-hull on this step" rather than "this episode ended by crashing" — closure
-voids an episode's credit on that flag, which now reads where an episode
-happened to finish rather than whether it survived. Closure stays logged on
-every report, so it can still be read after the fact; it is the right
-objective for a spec that searches over reward weights, which these do not.
+two grounds. First, the one reward weight the vector specs search —
+`progress` — is bounded in what it can add to a return, so trials stay
+comparable. It telescopes over an episode to `progress * (start_range -
+end_range) / position_scale_m`, which the 500 m start shell caps at under 9
+against episodes scoring in the hundreds; the null-action baseline below
+measures the gap between the term on and off at 0.3. The event weights
+(`dock_success`, `collision`, `escape`) have no such bound — a trial handed a
+bigger dock bonus scores higher for identical flying — and are deliberately
+left out of the space for that reason.
+
+Second, closure is weaker here than it looks. Under the soft keep-out zone
+`collision_terminates` is false, so `info["collision"]` means "inside the hull
+on this step" rather than "this episode ended by crashing" — and closure voids
+an episode's credit on that flag, which now reads where an episode happened to
+finish rather than whether it survived. Closure stays logged on every report,
+so it can still be read after the fact; it is the right objective for a spec
+that searches the event weights, which these do not.
 
 **Hyperband pruning.** Both specs set `early_terminate: {type: hyperband,
 min_iter: 2}` — a trial must have reported its objective twice before
@@ -84,7 +109,7 @@ that source, not paraphrased from memory):
 - The environment comes from the spec's own `environments` parameter, falling
   back to `sweep_trial.DEFAULT_ENVIRONMENTS` (`iss_numerical_ports`) for a
   spec that names none. Both vector specs pin
-  `iss_numerical_ports_dense_1hz`: the `iss-numerical` env on the random
+  `iss_numerical_ports_progress_1hz`: the `iss-numerical` env on the random
   5-port goal distribution, with the dense-dominant reward and soft keep-out
   zone, flown at a 1 s control step. The dense terms carry the task, so a
   trial's score reflects how it flies rather than whether a terminal bonus
@@ -126,11 +151,27 @@ afterward, since a trial with no reported objective is worthless to the
 sweep. The wall-clock bound is on training only, not the whole trial
 process.
 
-**Stopping agents at a deadline.** Run agents under `nohup`/`tmux`; stop them
-with `Ctrl-C` (SIGINT) rather than killing the process. SIGINT lets whichever
-trial is in flight finish its final eval and save instead of losing that
-trial's objective — budget past the deadline for that tail, roughly 8-9
-minutes for the in-flight trial to wrap up.
+**Stopping agents at a deadline.** SIGINT the agent — `just
+sweep-fleet-stop`, or `Ctrl-C` on a foreground `just sweep-agent`. The agent
+forwards the signal to the trial it is running
+(`wandb_agent.AgentProcess._forward_signal`), and `GracefulStopCallback` takes
+it there: it sets a flag, `_on_step` returns False, and `model.learn()` returns
+the same way it does at the end of a horizon. Every `on_training_end` runs, so
+the trial still flies its final 20-episode eval and reports the objective it
+spent hours earning. Budget a couple of minutes for that tail.
+
+This is cooperative on purpose, and the reason `TrialTimeoutCallback` is
+written the same way. Left to Python's default handler the signal raises
+`KeyboardInterrupt` inside `model.learn()`; SB3 calls
+`callback.on_training_end()` as a plain statement after its training loop
+rather than from a `finally`, so an interrupt skips it, `EvalReportCallback`
+never fires its final report, and the trial drops out of the sweep's ranking
+entirely. A second signal is left to the default handler, so an operator who
+needs the process down immediately still has it.
+
+`just sweep-fleet-kill` SIGKILLs the whole session instead — agent, trial and
+env workers, none of which get to report. It is for a graceful stop that has
+already hung, not for a routine shutdown.
 
 ## Winner-freezing convention
 
@@ -156,7 +197,13 @@ the highest `sweep/final_mean_return` (the objective's value from its final,
 
   api = wandb.Api()
   sweep = api.sweep("<entity>/<project>/<sweep_id>")
-  winner = max(sweep.runs, key=lambda r: r.summary["sweep/final_mean_return"])
+  # Not every run has the key. A trial that diverged -- SAC's actor going NaN
+  # is the usual way -- still closes its wandb run through sweep_trial's own
+  # finally, so it lands in this list as `finished` with no objective at all.
+  # Indexing the summary directly raises KeyError on the first one.
+  scored = [r for r in sweep.runs if "sweep/final_mean_return" in r.summary]
+  winner = max(scored, key=lambda r: r.summary["sweep/final_mean_return"])
+  print(f"{len(scored)}/{len(list(sweep.runs))} runs reported an objective")
   print(winner.id, winner.summary["sweep/final_mean_return"])
   print(dict(winner.config))
   ```
@@ -188,7 +235,8 @@ trial beat a zero-thrust policy on the same eval seeds. The only behaviour
 that varied was how far a policy drifted toward the 750 m escape boundary, so
 the objective ranked configs by reliable passivity. Those freezes are correct
 records of their sweeps and the wrong thing to read as tuned docking
-baselines; they stand until the sweeps against `iss_numerical_ports_dense_1hz`
+baselines; they stand until the sweeps against
+`iss_numerical_ports_progress_1hz`
 conclude and produce winners to replace them. The pixel sweeps (`ppo_resnet`,
 `sac_resnet`) remain deferred.
 
@@ -197,10 +245,17 @@ next to what doing nothing is worth on the same episodes.
 `pocs/null_action_baseline.py` flies the final report's protocol — 20
 episodes at seeds 10,000, 10,001, ... with a constant zero action — and
 prints the three numbers a trial is scored on. On
-`iss_numerical_ports_dense_1hz` it scores **−405.4** mean return, 0% success,
-and 270 m closure against a 100–500 m start shell. Run it whenever the reward
-or the control step changes; the figure is a property of both, and a trial
-that does not beat it learned nothing.
+`iss_numerical_ports_progress_1hz` it scores **−405.7** mean return, 0%
+success, and 270 m closure against a 100–500 m start shell. Run it whenever
+the reward or the control step changes; the figure is a property of both, and
+a trial that does not beat it learned nothing.
+
+It also measures what the swept `progress` weight costs the objective's
+comparability. The same protocol on `iss_numerical_ports_dense_1hz`, which is
+this config with the term off, scores −405.4 — a 0.3 gap, because a policy
+that does not close the range telescopes the term to nearly zero. The
+`progress` arm of a sweep is therefore ranked against the same scale as the
+arm without it.
 
 ## Telemetry
 

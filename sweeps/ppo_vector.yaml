@@ -40,7 +40,26 @@ parameters:
     # second over a 360 s episode is 360 decisions rather than 7,200, which is
     # the cadence both Broida and Linares (AAS 19-462) and Dunlap et al.
     # (JAIS 20(1) 2023) trained at.
-    value: iss_numerical_ports_dense_1hz
+    #
+    # The progress variant, so reward_weights.progress exists for the `progress`
+    # parameter below to write. Its own -2.0 is one of the values searched, and
+    # 0.0 among them is exactly iss_numerical_ports_dense_1hz.
+    value: iss_numerical_ports_progress_1hz
+  progress:
+    # Whether closing the range is paid when it is closed, and how much. 0.0 is
+    # the absolute-position reward with no progress term at all; the rest price
+    # the metre as it is closed rather than through the slow decay of an
+    # absolute penalty. On this config the first step of a 1 m/s approach loses
+    # 0.005 without the term and gains 0.004 at -2.0, which is the difference
+    # between an approach undirected exploration can discover and one it
+    # cannot.
+    #
+    # Comparable under mean return, unlike the event weights, because the term
+    # telescopes to progress * (start_range - end_range) / position_scale_m --
+    # bounded by the 500 m start shell at under 9 of return, against episodes
+    # that score in the hundreds. It also cannot be farmed by cycling in and
+    # out, since only the endpoints survive the telescoping.
+    values: [0.0, -1.0, -2.0, -4.0]
   seed:
     value: 0
   trial_timesteps:

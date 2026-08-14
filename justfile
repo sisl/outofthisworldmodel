@@ -74,6 +74,85 @@ sweep-agent SWEEP_ID SWEEP GPU="2":
     esac
     uv run wandb agent "$WANDB_ENTITY/$WANDB_PROJECT/{{SWEEP_ID}}"
 
+# Launch COUNT detached agents for one sweep, round-robin over GPUS for SAC
+sweep-fleet SWEEP_ID SWEEP COUNT GPUS="2,3":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # One agent runs one trial at a time, so covering a search space in a
+    # night means running several side by side. The binding resource is CPU:
+    # every env worker is a process integrating the dynamics, and a SAC
+    # learner asks little of a card that a PPO learner does not touch at all.
+    mkdir -p runs/logs
+    IFS=',' read -r -a gpus <<< "{{GPUS}}"
+    for i in $(seq 0 $(( {{COUNT}} - 1 ))); do
+        case "{{SWEEP}}" in
+            # Threads for the LEARNER process; env workers pin themselves to
+            # one each (owm.envs.factory). Left at torch's default every
+            # learner would claim a thread per core, and a fleet of them would
+            # spend the night contending rather than training. PPO's learner
+            # does its gradient work here, SAC's does it on the card.
+            ppo_*) device="" ; threads=4 ;;
+            sac_*) device="${gpus[$(( i % ${#gpus[@]} ))]}" ; threads=2 ;;
+            *) echo "unknown sweep '{{SWEEP}}': expected ppo_* or sac_*" >&2; exit 1 ;;
+        esac
+        log="runs/logs/{{SWEEP}}-{{SWEEP_ID}}-$i.log"
+        # setsid puts each agent in a session of its own. That session is what
+        # sweep-fleet-kill signals for a hard stop; the graceful stop signals
+        # the recorded agent pid alone, and the two are different on purpose --
+        # see sweep-fleet-stop.
+        CUDA_VISIBLE_DEVICES="$device" \
+        OMP_NUM_THREADS="$threads" MKL_NUM_THREADS="$threads" \
+        SWEEP_TRIAL_MAX_SECONDS="${SWEEP_TRIAL_MAX_SECONDS:-14400}" \
+            setsid nohup uv run wandb agent \
+            "$WANDB_ENTITY/$WANDB_PROJECT/{{SWEEP_ID}}" > "$log" 2>&1 &
+        # Per spec, not one file for the whole machine: the lanes are launched
+        # separately and are normally running side by side, so a single list
+        # would leave no way to stop one without the other.
+        echo "$!" >> "runs/logs/sweep-fleet-{{SWEEP}}.pids"
+        echo "{{SWEEP}} agent $i: pid $!, CUDA_VISIBLE_DEVICES='$device', $log"
+    done
+
+# Stop pulling new trials; the trial in flight runs to its end and reports.
+# SWEEP defaults to every lane; name one to stop just that lane.
+sweep-fleet-stop SWEEP="*":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    shopt -s nullglob
+    files=(runs/logs/sweep-fleet-{{SWEEP}}.pids)
+    if [[ ${#files[@]} -eq 0 ]]; then echo "no fleet recorded for '{{SWEEP}}'"; exit 0; fi
+    while read -r pid; do
+        [[ -n "$pid" ]] || continue
+        # The agent, which forwards the signal to the trial it is running
+        # (wandb_agent.AgentProcess._forward_signal). The trial takes it
+        # cooperatively -- GracefulStopCallback ends training so SB3 still runs
+        # on_training_end, and the final eval that is the trial's objective
+        # still happens. An agent that already exited is not an error.
+        if kill -INT "$pid" 2>/dev/null; then echo "SIGINT -> agent $pid"; fi
+    done < <(cat "${files[@]}")
+    rm -f "${files[@]}"
+    echo "each agent finishes its trial's final eval, then exits"
+
+# Force a fleet down now, losing the in-flight trials' objectives entirely.
+# SWEEP defaults to every lane; name one to kill just that lane.
+sweep-fleet-kill SWEEP="*":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    shopt -s nullglob
+    files=(runs/logs/sweep-fleet-{{SWEEP}}.pids)
+    if [[ ${#files[@]} -eq 0 ]]; then echo "no fleet recorded for '{{SWEEP}}'"; exit 0; fi
+    while read -r pid; do
+        [[ -n "$pid" ]] || continue
+        # SIGKILL across the whole session, which is the agent, the trial and
+        # the trial's env workers. Nothing gets to report, which is the
+        # difference between this and sweep-fleet-stop; reach for it only when
+        # the graceful stop is already hung or the deadline has passed.
+        sid=$(ps -o sess= -p "$pid" 2>/dev/null | tr -d ' ' || true)
+        if [[ -n "$sid" ]] && pkill -KILL -s "$sid"; then
+            echo "SIGKILL -> session $sid (agent $pid, its trial and workers)"
+        fi
+    done < <(cat "${files[@]}")
+    rm -f "${files[@]}"
+
 test:
     uv run pytest
 

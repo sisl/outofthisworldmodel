@@ -1,7 +1,9 @@
-"""Callbacks a sweep trial needs: objective reports and a wall-clock bound."""
+"""Callbacks a sweep trial needs: objective reports, a wall-clock bound, and a
+signal handler that keeps the report when a trial is stopped early."""
 
 from __future__ import annotations
 
+import signal
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -398,3 +400,54 @@ class TrialTimeoutCallback(BaseCallback):
         )
         wandb.log({"sweep/timed_out": 1, STEP_METRIC: self.num_timesteps})
         return False
+
+
+class GracefulStopCallback(BaseCallback):
+    """End training on a stop signal, so the trial still reports an objective.
+
+    Stopping a wandb agent does not leave the trial it is running alone:
+    `wandb_agent.AgentProcess._forward_signal` passes the signal on to the
+    trial process, where the default handler raises KeyboardInterrupt inside
+    `model.learn()`. SB3 does not run `callback.on_training_end()` on that
+    path, so `EvalReportCallback`'s final eval -- the objective the sweep ranks
+    the trial by -- never happens, and hours of training drop out of the
+    ranking entirely.
+
+    Ending training the way TrialTimeoutCallback does keeps that report: the
+    callback returns False, `learn()` returns normally, and every
+    `on_training_end` still runs. A second signal is left to the default
+    handler, so an operator who needs the process down now still has it.
+    """
+
+    SIGNALS = (signal.SIGINT, signal.SIGTERM)
+
+    def __init__(self):
+        super().__init__()
+        self._stopping = False
+        self._previous: dict[int, object] = {}
+
+    def _on_training_start(self) -> None:
+        # Registered here rather than at construction: signal.signal has to be
+        # called from the main thread, and this is the last hook that is
+        # guaranteed to run there before the training loop starts.
+        for signum in self.SIGNALS:
+            self._previous[signum] = signal.signal(signum, self._request_stop)
+
+    def _request_stop(self, signum, frame) -> None:
+        self._stopping = True
+        # Restored immediately, so a second signal is the escape hatch it needs
+        # to be rather than another polite request the loop might outlive.
+        signal.signal(signum, self._previous.get(signum) or signal.SIG_DFL)
+        print(
+            f"[sweep] signal {signum} at {self.num_timesteps} steps; ending "
+            "training so the final eval still reports (signal again to force)"
+        )
+
+    def _on_step(self) -> bool:
+        return not self._stopping
+
+    def _on_training_end(self) -> None:
+        for signum, handler in self._previous.items():
+            if handler is not None:
+                signal.signal(signum, handler)
+        self._previous.clear()
