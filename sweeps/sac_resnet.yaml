@@ -1,31 +1,56 @@
 # wandb Bayesian sweep over SAC on the ISS docking env, state + frozen-ResNet
-# observations (rl.obs=vector_resnet): the 25-d state vector with a frozen
+# observations (rl.obs=vector_resnet): the 27-d state vector with a frozen
 # ImageNet ResNet18's 512-d embedding of the rendered frame concatenated onto
-# it, as one flat Box. The policy is still MlpPolicy, so the search space below
-# is the one sac_vector uses -- the embedding changes the input width, not the
-# algorithm, and keeping the spaces identical is what makes the two sweeps
-# comparable.
+# it, as one flat Box (owm/envs/resnet_obs.py). The policy is still MlpPolicy
+# -- the embedding changes the input width, not the algorithm.
 #
 #   just sweep-init sac_resnet          # prints the sweep id
-#   just sweep-agent <id> sac_resnet    # one agent, pinned to GPU 0
+#   just sweep-agent <id> sac_resnet    # one agent, pinned to a GPU
 #
-# The learner runs on GPU 0 as it does for sac_vector, and only GPU 0: GPU 1 is
-# someone else's. The extractor runs on the workers' CPUs: each worker embeds
-# its own frames, and a CUDA context per worker would cost more than it buys.
+# environments is the render224 variant of the config the vector sweeps
+# settled on: same iss-numerical dynamics at a 1 s control step, same
+# progress-shaped reward, same random-port distribution. Sharing the
+# environment is what lets these results be read against the vector winners
+# and against the zero-thrust baseline. progress is left at that config's own
+# -2.0 rather than swept, unlike sac_vector: sweeping it there did not separate
+# the medians, and a dimension that buys nothing is expensive at this trial
+# count.
 #
-# The workers still cost GPU memory, because every one of them renders and the
-# renderer takes a Vulkan device worth ~1.9 GB on GPU 0. sweep_trial caps a
-# pixel trial at 4 workers for that reason: 4 render contexts, ~7.6 GB
-# measured, against the ~20 GB that 8 workers plus a resident eval pool cost
-# when it OOM'd five SAC trials in a row.
+# WHAT THIS SEARCHES, AND WHY IT IS NARROWER THAN sac_vector. A pixel trial
+# costs ~4x a vector one per step, so this sweep affords tens of trials rather
+# than sac_vector's 35 at three times the horizon. Spending them on
+# sac_vector's full space would sample it too thinly to rank anything above the
+# 200-400 unit seed spread that sweep measured. So everything sac_vector
+# already settled is pinned at conf/rl/sac_tuned.yaml's frozen values -- gamma,
+# tau, train_freq, target_entropy -- and the search covers what the observation
+# change actually calls into question: the policy width now reading 539 values
+# instead of 27, the learning rate and batch size that width interacts with,
+# the update-to-data ratio, and how long to fill the buffer before learning
+# from frames.
 #
-# environments pins the render224 variant of the same random-port distribution
-# sac_vector trains on: identical dynamics, rewards and port set, rendered at
-# the size the extractor reads so no frame is resampled every step.
+# target_entropy is pinned rather than searched on sac_vector's own evidence:
+# the sac_entropy ablation swept -3/-1/0/+3 with everything else held and found
+# the within-setpoint spread larger than the differences between setpoints.
+# -12.0 is admissible, not optimal, and a pixel sweep this size cannot settle
+# it either.
+#
+# ent_coef stays adaptive and is deliberately absent from the search. Fixed
+# values diverged SAC into an actor NaN within minutes in 4 of 7 trials against
+# 0 of 3 adaptive ones; sweep target_entropy instead if it ever needs tuning.
+#
+# The learner runs on the GPU as it does for sac_vector, and so does the
+# extractor: sweep_trial pins it to the card (PIXEL_EXTRACTOR_DEVICE) rather
+# than leaving it on the workers' CPUs, where a ResNet-18 forward per env per
+# step costs more than the render feeding it.
+#
+# The workers still cost GPU memory besides, because every one of them renders
+# and the renderer takes a Vulkan device worth ~1.9 GB. sweep_trial caps a
+# pixel trial at 4 workers for that reason.
 #
 # These specs live outside conf/ because they are wandb sweep files, not hydra
 # configs: a conf/sweep/ directory would appear in hydra's group discovery and
 # read as a config group nothing ever selects.
+name: sac_resnet_progress1hz_500k
 program: src/owm/baselines/rl/sweep_trial.py
 command:
   - ${env}
@@ -40,44 +65,72 @@ metric:
   goal: maximize
 early_terminate:
   type: hyperband
-  min_iter: 3   # in reports, not epochs: one per 30k steps at this horizon
+  min_iter: 2
 parameters:
   algo:
     value: sac
   obs:
     value: vector_resnet
   environments:
-    value: iss_coop_goal_ports_render224
+    value: iss_numerical_ports_progress_1hz_render224
   seed:
     value: 0
   trial_timesteps:
-    # Pinned from a measurement, not from the vector spec's 500k. A pixel
-    # trial runs 4 workers rather than 8 -- each renders, and a renderer holds
-    # ~1.9 GB of GPU memory whatever rl.device says -- which measured 48.5
-    # env-steps/s. 100k is ~34 min of env time, leaving the eval tail inside a
-    # ~60 min trial; 150k at this width would be ~52 min of env time alone.
-    value: 100000
+    # Measured on the host, not inherited: pocs/pixel_throughput.py puts a
+    # pixel SAC trial at 62 env-steps/s with four trials per lane sharing the
+    # machine, so 500k is ~2.25 h and an agent completes eight in an overnight
+    # run. Re-measure before reusing this number anywhere else -- it is a
+    # property of the card, the core count and the fleet width, not of SAC.
+    value: 500000
+  # --- pinned at sac_tuned's frozen values, not swept ---
+  # Written out as literals rather than left to fall through, because they
+  # would not fall through to sac_tuned: sweep_trial composes `rl=sac`, so an
+  # unswept hyperparameter takes conf/rl/sac.yaml's base default. gamma there
+  # is 0.999, a dt=50 ms value -- inheriting it silently would discount a 1 Hz
+  # trial over a horizon the vector sweep already rejected in favour of 0.997.
+  gamma:
+    value: 0.997
+  tau:
+    value: 0.01734429982979999
+  train_freq:
+    value: 4
+  target_entropy:
+    value: -12.0
+  ent_coef:
+    value: auto
+  # --- searched ---
+  policy_kwargs:
+    # The headline question. vector_resnet makes the observation 539 wide
+    # rather than 27, and conf/rl/sac_resnet.yaml's [256, 256] is reasoning
+    # about compression ratios rather than a measured result.
+    #
+    # The range is shifted up from sac_vector's rather than widened, to probe
+    # capacity without costing a trial count this sweep does not have. Up,
+    # because sac_vector's evidence is that its own range was capped: both it
+    # and ppo_vector chose [256, 256, 256], the deepest architecture either was
+    # offered, on an observation a twentieth as wide as this one. [64, 64] is
+    # dropped in exchange -- neither vector winner went near it, and it would
+    # compress 539 inputs 8.4x before anything is learned from them.
+    values:
+      - {net_arch: [256, 256]}
+      - {net_arch: [512, 512]}
+      - {net_arch: [256, 256, 256]}
+      - {net_arch: [512, 512, 512]}
   learning_rate:
     distribution: log_uniform_values
     min: 1.0e-5
     max: 1.0e-3
   batch_size:
     values: [256, 512, 1024]
-  gamma:
-    # dt=50 ms, so even 0.995 only looks ~10 s ahead; lower is myopic here.
-    values: [0.995, 0.999, 0.9995]
-  tau:
-    distribution: log_uniform_values
-    min: 1.0e-3
-    max: 2.0e-2
-  train_freq:
-    values: [1, 4, 8]
   gradient_steps:
-    values: [1, 4, 8]
+    # The update-to-data ratio at this width: with train_freq 4 and 4 envs, SAC
+    # takes this many gradient steps per 16 transitions.
+    values: [1, 2, 4]
   learning_starts:
     values: [5000, 10000, 20000]
   buffer_size:
-    # Kept identical to sac_vector's so the two sweeps search the same space,
-    # but note that at a 150k horizon neither value ever evicts a transition,
-    # so this dimension cannot separate trials here the way it can at 500k.
+    # Unlike the vector spec, this dimension can separate trials here: at a
+    # 500k horizon 300k evicts and 1M does not. The cost is RAM, ~4.35 GB per
+    # million transitions at the 539-wide observation against 0.25 GB at the
+    # vector width.
     values: [300000, 1000000]

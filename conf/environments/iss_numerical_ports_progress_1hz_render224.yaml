@@ -1,0 +1,21 @@
+# iss_numerical_ports_progress_1hz rendered at 224x224, the input size the
+# ImageNet ResNets were trained at. Only rl.obs=vector_resnet reads the frame,
+# so this differs from iss_numerical_ports_progress_1hz in nothing a
+# vector-observation run can see: the render block is a graphics setting, not a
+# dynamics or reward one.
+#
+# Rendering the frame at the size the extractor wants avoids resampling the
+# renderer's 512x512 default down to 224 on every single step.
+#
+# This is the pixel counterpart of the config the vector sweeps settled on:
+# same iss-numerical dynamics at a 1 s control step, same progress-shaped
+# reward, same random-port distribution. Sharing the environment is what lets a
+# pixel result be read against the vector winners and against the zero-thrust
+# baseline, which a render224 variant of any other base would not.
+defaults:
+  - iss_numerical_ports_progress_1hz
+  - _self_
+
+render:
+  image_width: 224
+  image_height: 224

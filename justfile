@@ -1,26 +1,35 @@
 set dotenv-load
 
-# Vulkan does not honour CUDA_VISIBLE_DEVICES, so without this the val-episode
-# renderer lands on GPU 0 -- an H100 another tenant is using. The RTX PRO
-# 6000s (GPUs 2/3) are ours, and are the only adapters matching this name;
-# pygfx reads the variable and picks the first match.
-#
-# The default names THIS host's cards, so it is wrong on any other one, and a
-# plain `export X := "..."` in just is unconditional -- it overwrites the
-# caller's environment rather than deferring to it, so `PYGFX_WGPU_ADAPTER_NAME
-# =... just train-ppo` would silently keep the default and fail with "Adapter
-# with name 'RTX PRO 6000' not found". env_var_or_default defers instead. List
-# a host's adapters with:
-#
-#   uv run python -c "import wgpu; [print(a.info['device']) for a in \
-#       wgpu.gpu.enumerate_adapters_sync()]"
-export PYGFX_WGPU_ADAPTER_NAME := env_var_or_default("PYGFX_WGPU_ADAPTER_NAME", "RTX PRO 6000")
+# Which CUDA devices this checkout may use, as the comma-separated indices
+# nvidia-smi prints. The default is the single card every machine with a GPU
+# has; set OWM_GPUS in .env on a host with more, or one whose other cards
+# belong to someone else. Recipes that place work on a card read this, so it is
+# the one setting a new host normally has to change.
+OWM_GPUS := env_var_or_default("OWM_GPUS", "0")
 
-# CUDA's default enumeration is fastest-first by compute capability, which on
-# this machine puts the Blackwell RTX cards at CUDA indices 0/1 and the H100s
-# at 2/3 -- the reverse of nvidia-smi's PCI order that every GPU number in
-# this file (and in people's heads) refers to. Pin PCI order so
-# CUDA_VISIBLE_DEVICES=2 means the GPU nvidia-smi calls 2.
+# Vulkan does not honour CUDA_VISIBLE_DEVICES, so the renderer picks its own
+# adapter and OWM_GPUS cannot steer it. Empty lets pygfx choose, which asks for
+# a high-performance adapter and so lands on a discrete GPU rather than the
+# llvmpipe software one -- right on a machine whose cards are all yours.
+#
+# Set it in .env on a shared host, to a substring of the adapter you own: pygfx
+# takes the first adapter whose summary contains it, and raises "Adapter with
+# name '...' not found" rather than falling back if nothing matches. Note that
+# identical cards share a summary, so a name selects a MODEL and not a slot --
+# every render context in the fleet lands on the first card matching it. List a
+# host's adapters with `just adapters`.
+#
+# env_var_or_default, not a plain `export X := "..."`, because the latter is
+# unconditional in just: it overwrites the caller's environment rather than
+# deferring to it, so `PYGFX_WGPU_ADAPTER_NAME=... just train-ppo` would
+# silently keep the default.
+export PYGFX_WGPU_ADAPTER_NAME := env_var_or_default("PYGFX_WGPU_ADAPTER_NAME", "")
+
+# CUDA enumerates fastest-first by compute capability, so its indices reorder
+# themselves around whatever mix of cards a host has and stop agreeing with
+# nvidia-smi's PCI order -- which is the order OWM_GPUS, this file, and people's
+# heads all mean. Pin PCI order so CUDA_VISIBLE_DEVICES=2 is the GPU nvidia-smi
+# calls 2 on every host.
 export CUDA_DEVICE_ORDER := "PCI_BUS_ID"
 
 # owm-envs ships CUDA jax, but in this repo jax only flies env dynamics, and
@@ -59,23 +68,32 @@ sweep-init SWEEP:
     uv run wandb sweep --entity "$WANDB_ENTITY" --project "$WANDB_PROJECT" \
         sweeps/{{SWEEP}}.yaml
 
-# Run one sweep agent (PPO on CPU, SAC on the given GPU); stop it with Ctrl-C
-sweep-agent SWEEP_ID SWEEP GPU="2":
+# List this host's render adapters, to pick a PYGFX_WGPU_ADAPTER_NAME from
+adapters:
+    uv run python -c "import wgpu; [print(a.summary) for a in \
+        wgpu.gpu.enumerate_adapters_sync()]"
+
+# Run one sweep agent (vector PPO on CPU, everything else on a GPU); Ctrl-C stops it
+sweep-agent SWEEP_ID SWEEP GPU="":
     #!/usr/bin/env bash
     set -euo pipefail
-    # Keyed on the spec's algo prefix, so every obs mode of an algo lands on
-    # the same device class. GPUs 0 and 1 (the H100s) belong to other
-    # tenants; a SAC agent takes one of GPUs 2/3 (the RTX PRO 6000s) --
-    # pass a trailing 3 to run a second agent beside the first.
+    # Defaults to the first card in OWM_GPUS; name one to place the agent
+    # yourself, which is how a second agent is run beside the first.
+    gpu="{{GPU}}"; [[ -n "$gpu" ]] || { gpu="{{OWM_GPUS}}"; gpu="${gpu%%,*}"; }
+    # Keyed on the spec, most specific first. A vector PPO learner does its
+    # gradient work on the CPU and needs no card at all, but a pixel one still
+    # does: every obs=vector_resnet worker embeds its frame with a ResNet-18,
+    # and that runs on a GPU whatever the learner is on.
     case "{{SWEEP}}" in
+        *resnet*) export CUDA_VISIBLE_DEVICES="$gpu" ;;
         ppo_*) export CUDA_VISIBLE_DEVICES="" ;;
-        sac_*) export CUDA_VISIBLE_DEVICES="{{GPU}}" ;;
+        sac_*) export CUDA_VISIBLE_DEVICES="$gpu" ;;
         *) echo "unknown sweep '{{SWEEP}}': expected ppo_* or sac_*" >&2; exit 1 ;;
     esac
     uv run wandb agent "$WANDB_ENTITY/$WANDB_PROJECT/{{SWEEP_ID}}"
 
-# Launch COUNT detached agents for one sweep, round-robin over GPUS for SAC
-sweep-fleet SWEEP_ID SWEEP COUNT GPUS="2,3":
+# Launch COUNT detached agents for one sweep, round-robin over the given GPUs
+sweep-fleet SWEEP_ID SWEEP COUNT GPUS=OWM_GPUS:
     #!/usr/bin/env bash
     set -euo pipefail
     # One agent runs one trial at a time, so covering a search space in a
@@ -91,6 +109,11 @@ sweep-fleet SWEEP_ID SWEEP COUNT GPUS="2,3":
             # learner would claim a thread per core, and a fleet of them would
             # spend the night contending rather than training. PPO's learner
             # does its gradient work here, SAC's does it on the card.
+            #
+            # Most specific first: a pixel lane takes a card whatever its algo,
+            # because its workers embed frames on one. See sweep-agent.
+            ppo_*resnet*) device="${gpus[$(( i % ${#gpus[@]} ))]}" ; threads=4 ;;
+            sac_*resnet*) device="${gpus[$(( i % ${#gpus[@]} ))]}" ; threads=2 ;;
             ppo_*) device="" ; threads=4 ;;
             sac_*) device="${gpus[$(( i % ${#gpus[@]} ))]}" ; threads=2 ;;
             *) echo "unknown sweep '{{SWEEP}}': expected ppo_* or sac_*" >&2; exit 1 ;;
