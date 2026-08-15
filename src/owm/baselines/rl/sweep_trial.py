@@ -137,21 +137,30 @@ _MISSING = object()
 
 # Fixed per algorithm, not swept: they are a property of the machine the sweep
 # runs on, not of the policy. cuda:0 means "the one GPU this agent was given":
-# `just sweep-agent` narrows CUDA_VISIBLE_DEVICES to a single physical device
-# (2 or 3 -- 0 and 1 belong to other tenants), and cuda:0 is that device.
+# `just sweep-agent` narrows CUDA_VISIBLE_DEVICES to a single device from
+# OWM_GPUS, and cuda:0 is that device whatever index it carries on the host.
 RESOURCES = {
     "ppo": {"n_envs": 8, "vec": "subproc", "device": "cpu"},
     "sac": {"n_envs": 4, "vec": "subproc", "device": "cuda:0"},
 }
 # Every vector_resnet env renders, and the renderer takes a Vulkan device on
 # the GPU worth roughly 1.9 GB per process. Vulkan does not honour
-# CUDA_VISIBLE_DEVICES -- without PYGFX_WGPU_ADAPTER_NAME (which the justfile
-# exports to point at this machine's own GPUs) every render context lands on
-# GPU 0 whatever rl.device says -- so the CPU-learner PPO lane is no cheaper
-# than the SAC one. Eight workers plus a five-wide eval pool put ~20 GB of
-# one shared GPU behind a single trial, which is what OOM'd five SAC trials
+# CUDA_VISIBLE_DEVICES -- the adapter is chosen by PYGFX_WGPU_ADAPTER_NAME, or
+# by pygfx itself when that is unset, so every render context in a fleet lands
+# on one card whatever rl.device says -- and the CPU-learner PPO lane is no
+# cheaper than the SAC one. Eight workers plus a five-wide eval pool put ~20 GB
+# of one shared GPU behind a single trial, which is what OOM'd five SAC trials
 # in a row when another tenant arrived.
 PIXEL_N_ENVS = 4
+# The frozen extractor runs on the card rather than on the workers' CPUs.
+# extractor_kwargs defaults a subproc worker to CPU -- a CUDA context per
+# worker is not worth its few hundred MB when the embedding is incidental --
+# but in a pixel trial the embedding is what bounds throughput: a ResNet-18
+# forward per env per step costs more single-threaded on CPU than the render
+# feeding it. This is the device the extractor uses in BOTH lanes, PPO's
+# included: its learner stays on CPU, and the extractor's device is not the
+# learner's.
+PIXEL_EXTRACTOR_DEVICE = "cuda:0"
 
 
 def build_cfg(config: Mapping[str, Any], run_dir: Path) -> DictConfig:
@@ -230,16 +239,32 @@ def build_cfg(config: Mapping[str, Any], run_dir: Path) -> DictConfig:
     )
     cfg.rl.vec = RESOURCES[algo]["vec"]
     cfg.rl.device = RESOURCES[algo]["device"]
-    # SB3's get_device falls back to CPU without failing, so an agent launched
-    # against the wrong sweep id -- `sweep-agent <sac-id> ppo_vector` exports
-    # CUDA_VISIBLE_DEVICES="" -- would train every SAC trial on CPU and report
-    # the results as if they were the GPU run that was asked for.
-    if str(cfg.rl.device).startswith("cuda") and not torch.cuda.is_available():
+    if str(cfg.rl.obs) == "vector_resnet":
+        cfg.rl.obs_resnet.device = PIXEL_EXTRACTOR_DEVICE
+    # SB3's get_device falls back to CPU without failing, and so does
+    # extractor_kwargs, so an agent launched against the wrong sweep id --
+    # `sweep-agent <sac-id> ppo_vector` exports CUDA_VISIBLE_DEVICES="" --
+    # would train every SAC trial on CPU, or embed every pixel trial's frames
+    # there, and report the results as if they were the GPU run that was asked
+    # for. A pixel PPO trial needs a card for its extractor even though its
+    # learner does not, which is why this asks the config rather than the algo.
+    wants_cuda = sorted(
+        {
+            device
+            for device in (
+                str(cfg.rl.device),
+                str(cfg.rl.obs_resnet.device) if str(cfg.rl.obs) == "vector_resnet" else "",
+            )
+            if device.startswith("cuda")
+        }
+    )
+    if wants_cuda and not torch.cuda.is_available():
         raise SystemExit(
-            f"{algo} trials need {cfg.rl.device} but torch reports no CUDA "
-            "device. The usual cause is an agent started against another "
-            "sweep's id: `just sweep-agent <id> ppo_vector` hides the GPUs, so "
-            "check that this agent's spec name matches the sweep it joined."
+            f"{algo} {cfg.rl.obs} trials need {', '.join(wants_cuda)} but torch "
+            "reports no CUDA device. The usual cause is an agent started "
+            "against another sweep's id: `just sweep-agent <id> ppo_vector` "
+            "hides the GPUs, so check that this agent's spec name matches the "
+            "sweep it joined."
         )
     # A trial is disposable and never resumed, so periodic checkpoints would
     # only cost disk — SAC's carry a replay buffer of hundreds of MB each.
@@ -300,6 +325,18 @@ def main() -> None:
         run_dir = SWEEP_RUNS_DIR / str(config.get("algo", "unknown")) / run.id
         cfg = build_cfg(config, run_dir)
         obs_mode = str(cfg.rl.obs)
+        # Tagged after init, not through wandb.init(tags=...): the agent hands
+        # the trial its config only once the run is open, and the algo and
+        # observation mode being tagged come from it. A project holds sweep
+        # trials and long training runs side by side, and the wandb UI filters
+        # on tags, so without these a trial is only distinguishable from a
+        # 100M-step run by opening it.
+        run.tags = tuple(run.tags or ()) + (
+            "sweep",
+            str(config.get("algo", "unknown")),
+            obs_mode,
+            str(config.get(ENVIRONMENTS_KEY, DEFAULT_ENVIRONMENTS)),
+        )
         resnet = None
         if obs_mode == "vector_resnet":
             # Imported here, not at the top: owm.envs.resnet_obs pulls in

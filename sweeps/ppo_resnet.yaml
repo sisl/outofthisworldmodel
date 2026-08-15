@@ -1,33 +1,47 @@
 # wandb Bayesian sweep over PPO on the ISS docking env, state + frozen-ResNet
-# observations (rl.obs=vector_resnet): the 25-d state vector with a frozen
+# observations (rl.obs=vector_resnet): the 27-d state vector with a frozen
 # ImageNet ResNet18's 512-d embedding of the rendered frame concatenated onto
-# it, as one flat Box. The policy is still MlpPolicy, so the search space below
-# is the one ppo_vector uses -- the embedding changes the input width, not the
-# algorithm, and keeping the spaces identical is what makes the two sweeps
-# comparable.
+# it, as one flat Box (owm/envs/resnet_obs.py). The policy is still MlpPolicy
+# -- the embedding changes the input width, not the algorithm.
 #
 #   just sweep-init ppo_resnet          # prints the sweep id
-#   just sweep-agent <id> ppo_resnet    # one agent, CPU only
+#   just sweep-agent <id> ppo_resnet    # one agent
 #
-# The learner runs on CPU as it does for ppo_vector, and the extractor runs on
-# the workers' CPUs: each worker embeds its own frames, and a CUDA context per
-# worker would cost more than it buys.
+# environments is the render224 variant of the config the vector sweeps
+# settled on: same iss-numerical dynamics at a 1 s control step, same
+# progress-shaped reward, same random-port distribution. Sharing the
+# environment is what lets these results be read against the vector winners
+# and against the zero-thrust baseline. progress is left at that config's own
+# -2.0 rather than swept, unlike ppo_vector: sweeping it there did not separate
+# the medians, and a dimension that buys nothing is expensive at this trial
+# count.
+#
+# WHAT THIS SEARCHES, AND WHY IT IS NARROWER THAN ppo_vector. A pixel trial
+# costs ~15x a vector one per step, so this sweep affords tens of trials rather
+# than ppo_vector's 28 at eight times the horizon. Spending them on ppo_vector's
+# full ten-dimensional space would sample it too thinly to rank anything above
+# the seed spread. So everything ppo_vector already settled is pinned at
+# conf/rl/ppo_tuned.yaml's frozen values -- gamma, gae_lambda, clip_range,
+# vf_coef -- and the search covers what the observation change actually calls
+# into question: the policy width now reading 539 values instead of 27, the
+# learning rate and batch size that width interacts with, and the rollout
+# shape, which cannot be inherited because a pixel trial runs 4 envs where the
+# vector winner ran 32.
+#
+# The learner runs on CPU as it does for ppo_vector; the extractor does not.
+# sweep_trial pins it to the card (PIXEL_EXTRACTOR_DEVICE): a ResNet-18 forward
+# per env per step is what bounds this mode's throughput, and single-threaded
+# on CPU it costs more than the render feeding it.
 #
 # This lane is NOT GPU-free even so. Every worker renders, and the renderer
-# takes a Vulkan device worth ~1.9 GB on GPU 0 -- Vulkan does not honour the
-# CUDA_VISIBLE_DEVICES="" that the ppo_ recipe exports, so a pixel PPO trial
-# costs the same GPU memory as a pixel SAC one. sweep_trial caps a pixel trial
-# at 4 workers for that reason: 4 render contexts, ~7.6 GB measured, against
-# the ~20 GB that 8 workers plus a resident eval pool cost when it OOM'd five
-# SAC trials in a row.
-#
-# environments pins the render224 variant of the same random-port distribution
-# ppo_vector trains on: identical dynamics, rewards and port set, rendered at
-# the size the extractor reads so no frame is resampled every step.
+# takes a Vulkan device worth ~1.9 GB -- Vulkan does not honour
+# CUDA_VISIBLE_DEVICES, so a pixel PPO trial costs the same GPU memory as a
+# pixel SAC one. sweep_trial caps a pixel trial at 4 workers for that reason.
 #
 # These specs live outside conf/ because they are wandb sweep files, not hydra
 # configs: a conf/sweep/ directory would appear in hydra's group discovery and
 # read as a config group nothing ever selects.
+name: ppo_resnet_progress1hz_500k
 program: src/owm/baselines/rl/sweep_trial.py
 command:
   - ${env}
@@ -42,43 +56,75 @@ metric:
   goal: maximize
 early_terminate:
   type: hyperband
-  min_iter: 3   # in reports, not epochs: one per 30k steps at this horizon
+  min_iter: 2
 parameters:
   algo:
     value: ppo
   obs:
     value: vector_resnet
   environments:
-    value: iss_coop_goal_ports_render224
+    value: iss_numerical_ports_progress_1hz_render224
   seed:
     value: 0
   trial_timesteps:
-    # Pinned from a measurement, not from the vector spec's 500k. A pixel
-    # trial runs 4 workers rather than 8 -- each renders, and a renderer holds
-    # ~1.9 GB of GPU memory whatever rl.device says -- which measured 48.5
-    # env-steps/s. 100k is ~34 min of env time, leaving the eval tail inside a
-    # ~60 min trial; 150k at this width would be ~52 min of env time alone.
-    value: 100000
+    # Measured on the host, not inherited: pocs/pixel_throughput.py puts a
+    # pixel PPO trial at 66 env-steps/s with four trials per lane sharing the
+    # machine, so 500k is ~2.1 h and an agent completes eight in an overnight
+    # run. Re-measure before reusing this number anywhere else -- it is a
+    # property of the card, the core count and the fleet width, not of PPO.
+    value: 500000
+  # --- pinned at ppo_tuned's frozen values, not swept ---
+  # Written out as literals rather than left to fall through, because they
+  # would not fall through to ppo_tuned: sweep_trial composes `rl=ppo`, so an
+  # unswept hyperparameter takes conf/rl/ppo.yaml's base default. gamma there
+  # is 0.999, a dt=50 ms value -- inheriting it silently would discount a 1 Hz
+  # trial over a horizon the vector sweep already rejected in favour of 0.997.
+  gamma:
+    value: 0.997
+  gae_lambda:
+    value: 0.9453223308741135
+  clip_range:
+    value: 0.1
+  vf_coef:
+    value: 0.6666451279183626
+  # --- searched ---
+  policy_kwargs:
+    # The headline question. vector_resnet makes the observation 539 wide
+    # rather than 27, and conf/rl/ppo_resnet.yaml's [256, 256] is reasoning
+    # about compression ratios rather than a measured result.
+    #
+    # The range is shifted up from ppo_vector's rather than widened, to probe
+    # capacity without costing a trial count this sweep does not have. Up,
+    # because ppo_vector's evidence is that its own range was capped: both it
+    # and sac_vector chose [256, 256, 256], the deepest architecture either was
+    # offered, on an observation a twentieth as wide as this one. [64, 64] is
+    # dropped in exchange -- neither vector winner went near it, and it would
+    # compress 539 inputs 8.4x before anything is learned from them.
+    #
+    # Depth costs more here than in the SAC lane, whose learner has a card:
+    # PPO's gradient work runs on CPU, so the widest architecture is also the
+    # slowest trial and the likeliest to reach TrialTimeoutCallback's bound
+    # before its horizon. Read a timed-out trial as evaluated at fewer steps
+    # rather than as a worse architecture.
+    values:
+      - {net_arch: [256, 256]}
+      - {net_arch: [512, 512]}
+      - {net_arch: [256, 256, 256]}
+      - {net_arch: [512, 512, 512]}
   learning_rate:
     distribution: log_uniform_values
     min: 1.0e-5
     max: 1.0e-3
   n_steps:
-    values: [512, 1024, 2048, 4096]
+    # Swept rather than pinned because it cannot be inherited: ppo_tuned holds
+    # a 32,768-transition rollout as 1024 x 32 envs, and a pixel trial runs 4.
+    # These give rollouts of 4k, 8k and 16k.
+    values: [1024, 2048, 4096]
   batch_size:
     values: [256, 512, 1024]
-  gamma:
-    # dt=50 ms, so even 0.995 only looks ~10 s ahead; lower is myopic here.
-    values: [0.995, 0.999, 0.9995]
-  gae_lambda:
-    distribution: uniform
-    min: 0.9
-    max: 0.98
+  n_epochs:
+    values: [5, 10, 20]
   ent_coef:
     distribution: log_uniform_values
     min: 1.0e-8
     max: 1.0e-2
-  clip_range:
-    values: [0.1, 0.2, 0.3]
-  n_epochs:
-    values: [5, 10, 20]

@@ -1,0 +1,78 @@
+# Does the pixel SAC candidate reproduce? Every hyperparameter is pinned to the
+# configuration sac_resnet's three full-horizon winners agreed on, and the only
+# thing that varies is the seed.
+#
+#   just sweep-init sac_resnet_seeds
+#   just sweep-fleet <id> sac_resnet_seeds 4
+#
+# WHY THIS AND NOT MORE SEARCHING. sac_resnet ranked 36 trials and found one
+# architecture that works at all: [512, 512, 512] took 5 of the 5 strong
+# results, while every other architecture went 0 for 14 against the zero-thrust
+# baseline. Inside that architecture the outcome is bimodal rather than ordered
+# -- fanciful-sweep-16 and lilac-sweep-35 share a learning rate of 2.05e-4 and
+# returned -270 and -1230 -- so the ranking's remaining resolution is variance,
+# not signal, and Bayes had collapsed onto re-sampling it.
+#
+# What a committed configuration needs at that point is not a better rank. It
+# is the answer to whether the chosen point reproduces, which the sweep cannot
+# give because it pins seed: 0 and every trial is therefore one draw.
+#
+# The learning rate is the one place the winners disagreed: wise-sweep-12 took
+# 3.11e-4 and scored best at -182.8, dulcet-sweep-26 and copper-sweep-28 took
+# 1.60e-4 and 1.61e-4 and scored -196.2 and -199.2. The 1.6e-4 value is pinned
+# here rather than the best-scoring one, on two grounds: a 14-unit gap is far
+# inside the 200-400 unit spread sac_entropy measured at fixed hyperparameters,
+# so it is not evidence of superiority; and 3.11e-4 sits beside 3.28e-4, where
+# electric-sweep-29 returned -1332.
+method: grid
+name: sac_resnet_seeds_500k
+program: src/owm/baselines/rl/sweep_trial.py
+command:
+  - ${env}
+  - uv
+  - run
+  - python
+  - -m
+  - owm.baselines.rl.sweep_trial
+metric:
+  name: sweep/eval_mean_return
+  goal: maximize
+# No early_terminate. Hyperband exists to stop spending on trials that rank
+# badly, and a run's rank is the measurement here: pruning the bad draws would
+# discard exactly the observations that say how often the configuration fails.
+parameters:
+  algo:
+    value: sac
+  obs:
+    value: vector_resnet
+  environments:
+    value: iss_numerical_ports_progress_1hz_render224
+  trial_timesteps:
+    value: 500000
+  # The only free dimension. 0 is excluded: it is the seed every sac_resnet
+  # trial already ran, so it would re-measure a draw rather than add one.
+  seed:
+    values: [1, 2, 3, 4]
+  # --- the candidate, pinned ---
+  learning_rate:
+    value: 0.000161
+  batch_size:
+    value: 1024
+  gradient_steps:
+    value: 4
+  learning_starts:
+    value: 20000
+  buffer_size:
+    value: 300000
+  policy_kwargs:
+    value: {net_arch: [512, 512, 512]}
+  gamma:
+    value: 0.997
+  tau:
+    value: 0.01734429982979999
+  train_freq:
+    value: 4
+  target_entropy:
+    value: -12.0
+  ent_coef:
+    value: auto
