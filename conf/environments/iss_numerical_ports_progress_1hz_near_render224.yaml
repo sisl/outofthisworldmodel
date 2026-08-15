@@ -1,0 +1,19 @@
+# iss_numerical_ports_progress_1hz_near rendered at 224x224, the input size
+# the ImageNet ResNets were trained at. Only rl.obs=vector_resnet reads the
+# frame, so this differs from iss_numerical_ports_progress_1hz_near in nothing
+# a vector-observation run can see: the render block is a graphics setting, not
+# a dynamics or reward one.
+#
+# Rendering the frame at the size the extractor wants avoids resampling the
+# renderer's 512x512 default down to 224 on every single step.
+#
+# The pixel counterpart of the near-shell config, so a pixel sweep and a
+# vector sweep on that start distribution can be read against each other and
+# against the same zero-thrust baseline.
+defaults:
+  - iss_numerical_ports_progress_1hz_near
+  - _self_
+
+render:
+  image_width: 224
+  image_height: 224
