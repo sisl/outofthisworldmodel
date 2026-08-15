@@ -22,14 +22,32 @@ def algo_of(name: str) -> str:
     return spec(name)["parameters"]["algo"]["value"]
 
 
+# Two kinds of spec live here, and they answer different questions. A search
+# ranks configurations against each other and wants Bayes and banding. A
+# replication asks how often ONE configuration works, which is a measurement
+# rather than a search: it enumerates its draws and must not prune them.
+# Keyed on method rather than on a naming convention so that a spec cannot
+# opt out of a bar by what it is called.
+SEARCH_METHOD = "bayes"
+REPLICATION_METHOD = "grid"
+SEARCH_NAMES = [n for n in SPEC_NAMES if spec(n)["method"] == SEARCH_METHOD]
+REPLICATION_NAMES = [n for n in SPEC_NAMES if spec(n)["method"] == REPLICATION_METHOD]
+
+
 def test_a_spec_exists_for_every_algo():
     assert {algo_of(name) for name in SPEC_NAMES} == set(ALGOS)
 
 
 @pytest.mark.parametrize("name", SPEC_NAMES)
-def test_sweep_spec_asks_for_a_bayes_search_on_the_eval_objective(name):
+def test_every_spec_is_one_of_the_two_kinds(name):
+    # A typo'd method would otherwise drop a spec out of both of the tests
+    # below and leave it checked by neither.
+    assert spec(name)["method"] in {SEARCH_METHOD, REPLICATION_METHOD}
+
+
+@pytest.mark.parametrize("name", SPEC_NAMES)
+def test_sweep_spec_optimises_an_objective_the_trial_reports(name):
     body = spec(name)
-    assert body["method"] == "bayes"
     # One of the objectives the trial actually reports, paired with the only
     # direction that objective can be read in: a spec asking to maximize a
     # distance-to-goal, or to optimise a key nothing logs, would run a whole
@@ -37,8 +55,6 @@ def test_sweep_spec_asks_for_a_bayes_search_on_the_eval_objective(name):
     metric = body["metric"]
     assert metric["name"] in OBJECTIVES, metric["name"]
     assert metric["goal"] == OBJECTIVES[metric["name"]], metric
-    assert body["early_terminate"]["type"] == "hyperband"
-    assert body["early_terminate"]["min_iter"] >= 1
     assert body["parameters"]["algo"]["value"] in ALGOS
     # The recipe pins the device on this prefix, so a spec named otherwise
     # would run wherever the shell happened to point it.
@@ -46,6 +62,32 @@ def test_sweep_spec_asks_for_a_bayes_search_on_the_eval_objective(name):
     # The agent has to reach the trial entry point, not train.py: a command
     # pointing at plain training would run a sweep of identical default runs.
     assert "owm.baselines.rl.sweep_trial" in body["command"]
+
+
+@pytest.mark.parametrize("name", SEARCH_NAMES)
+def test_a_search_spec_bands_its_trials(name):
+    body = spec(name)
+    assert body["early_terminate"]["type"] == "hyperband"
+    assert body["early_terminate"]["min_iter"] >= 1
+
+
+@pytest.mark.parametrize("name", REPLICATION_NAMES)
+def test_a_replication_spec_varies_only_its_repeat_axis_and_keeps_every_draw(name):
+    body = spec(name)
+    # Banding a replication would discard the draws that failed, which are
+    # precisely the observations it exists to count.
+    assert "early_terminate" not in body, name
+    # Everything else pinned: a second free parameter would make the spread it
+    # measures a mixture of that parameter and the repeat, and the failure rate
+    # would belong to no single configuration. Free means anything the agent
+    # draws from -- an enumerated `values` or a continuous `distribution` --
+    # against `value`, which is the only form that pins.
+    varied = sorted(
+        key
+        for key, param in body["parameters"].items()
+        if {"values", "distribution"} & set(param)
+    )
+    assert varied == ["seed"], varied
 
 
 @pytest.mark.parametrize("name", SPEC_NAMES)
