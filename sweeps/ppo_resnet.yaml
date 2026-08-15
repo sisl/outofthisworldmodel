@@ -7,7 +7,7 @@
 #   just sweep-init ppo_resnet          # prints the sweep id
 #   just sweep-agent <id> ppo_resnet    # one agent
 #
-# environments is the render224 variant of the close-start config: the same
+# environments is the render224 variant of the near-shell config: the same
 # iss-numerical dynamics at a 1 s control step and the same progress-shaped
 # reward, begun 100-125 m out rather than across a five-fold band. progress is
 # left at that config's own -2.0 rather than swept, unlike ppo_vector:
@@ -52,7 +52,7 @@
 # These specs live outside conf/ because they are wandb sweep files, not hydra
 # configs: a conf/sweep/ directory would appear in hydra's group discovery and
 # read as a config group nothing ever selects.
-name: ppo_resnet_close_500k
+name: ppo_resnet_near_500k
 program: src/owm/baselines/rl/sweep_trial.py
 command:
   - ${env}
@@ -74,7 +74,7 @@ parameters:
   obs:
     value: vector_resnet
   environments:
-    value: iss_numerical_ports_progress_1hz_close_render224
+    value: iss_numerical_ports_progress_1hz_near_render224
   seed:
     value: 0
   trial_timesteps:
@@ -90,7 +90,7 @@ parameters:
   # base default, and gae_lambda there is a dt=50 ms value.
   gae_lambda:
     # Held at ppo_tuned's value. It smooths credit assignment over an episode,
-    # and the episode is still 360 steps of 1 s -- the close-start config
+    # and the episode is still 360 steps of 1 s -- the near-shell config
     # changed where a trajectory begins, not how long it runs -- so this is
     # the one member of that frozen group whose justification does not depend
     # on the start distance.

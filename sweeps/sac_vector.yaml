@@ -10,7 +10,7 @@
 # These specs live outside conf/ because they are wandb sweep files, not hydra
 # configs: a conf/sweep/ directory would appear in hydra's group discovery and
 # read as a config group nothing ever selects.
-name: sac_vector_close_1p5M
+name: sac_vector_near_1p5M
 program: src/owm/baselines/rl/sweep_trial.py
 command:
   - ${env}
@@ -41,7 +41,7 @@ parameters:
     # for the `progress` parameter below to write. See sweeps/ppo_vector.yaml
     # for why both lanes train here and why this one term is safe to search
     # against mean return.
-    value: iss_numerical_ports_progress_1hz_close
+    value: iss_numerical_ports_progress_1hz_near
   progress:
     # 0.0 is no progress term at all; the rest pay the metre as it is closed.
     # The 20M-step runs on the no-progress reward learned to stop escaping and

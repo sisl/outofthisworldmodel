@@ -9,7 +9,7 @@
 # These specs live outside conf/ because they are wandb sweep files, not hydra
 # configs: a conf/sweep/ directory would appear in hydra's group discovery and
 # read as a config group nothing ever selects.
-name: ppo_vector_close_4M
+name: ppo_vector_near_4M
 program: src/owm/baselines/rl/sweep_trial.py
 command:
   - ${env}
@@ -45,7 +45,7 @@ parameters:
     # The progress variant, so reward_weights.progress exists for the `progress`
     # parameter below to write. Its own -2.0 is one of the values searched, and
     # 0.0 among them is exactly iss_numerical_ports_dense_1hz.
-    value: iss_numerical_ports_progress_1hz_close
+    value: iss_numerical_ports_progress_1hz_near
   progress:
     # Whether closing the range is paid when it is closed, and how much. 0.0 is
     # the absolute-position reward with no progress term at all; the rest price
