@@ -44,6 +44,32 @@
 # decorrelates the rollout. n_steps here is therefore NOT the swept value read
 # literally; the pair has to move together.
 #
+# TWO HYPERPARAMETERS ARE NOT THE TRIAL'S, BECAUSE THE TRIAL'S DO NOT SURVIVE
+# THE HORIZON. A 100M-step run from this config with the winner's own
+# ent_coef 1.23e-8 and no target_kl peaked around 8-16M and then collapsed,
+# ending far below a zero-thrust policy. The mechanism was measured, not
+# inferred:
+#
+#   train/std           1.00 -> 0.59 @8M -> 0.21 @16M -> 0.079 @62M
+#   train/entropy_loss  -8.5 -> -5.3     -> +0.95 @16M -> +6.8
+#   train/approx_kl     0.002 -> 0.029   -> 0.55 @16M  -> 0.25
+#   train/clip_fraction 0.087 -> 0.54    -> 0.73       -> 0.80
+#
+# SB3 logs entropy_loss as -entropy, so it crossing zero at ~16M is the policy
+# entropy going negative -- the action distribution collapsing to a near-point
+# mass, exactly where return turned over. PPO's ent_coef is a plain float with
+# no "auto" counterpart (SAC's is str|float and supports one), so nothing in
+# the algorithm holds entropy up; a coefficient that vanishes is a run with no
+# exploration floor. The sweep could not see this because its trials stopped
+# at 4M, before the crossing.
+#
+# ent_coef 1e-3 and target_kl 0.02 are therefore JUDGEMENT, not sweep results.
+# 1e-3 sits between the collapsed 1.23e-8 and the 7.3e-3 of a trial that
+# underperformed at short horizon; target_kl 0.02 is the conventional value and
+# bounds the 20-epoch update that let approx_kl reach 0.25. Neither has been
+# tuned at length. If a later sweep searches them, it has to run past ~20M
+# steps or it will rediscover the same wrong answer.
+#
 # GAE is not quite identical across that change: it runs per environment over
 # each env's slice, so advantages come from 32 segments of 1024 steps rather
 # than 8 of 4096, and every segment boundary bootstraps off the value function.
@@ -53,11 +79,12 @@
 algo: ppo
 n_envs: 32           # with n_steps 1024 this holds the trial's 32,768 rollout
 vec: subproc
-# 100M at dt=1 s is 100M seconds of flight, ~278,000 episodes -- the scale
-# Broida and Linares (AAS 19-462) trained at (200,000 episodes) and within
-# range of Dunlap et al. (JAIS 20(1) 2023, 170M). Measured at 801 env-steps/s
-# this is ~35 h alone, ~43 h sharing the box with a SAC run.
-total_timesteps: 100000000
+# Set by the wall clock available, not by the science: measured 801
+# env-steps/s alone and ~640 sharing the box with a SAC run, so this is ~30 h.
+# At dt=1 s it is 70M seconds of flight, ~195,000 episodes -- close to the
+# 200,000 Broida and Linares (AAS 19-462) trained at, short of Dunlap et al.
+# (JAIS 20(1) 2023, 170M).
+total_timesteps: 70000000
 device: cpu          # SB3 PPO+MlpPolicy is faster on CPU
 # vector: the 25-dim state alone. vector_resnet: that vector with a frozen
 # pretrained ResNet's embedding of the rendered frame concatenated onto it,
@@ -91,9 +118,17 @@ hyperparams:
   learning_rate: 0.00021578468144928557
   gamma: 0.997
   gae_lambda: 0.9453223308741135
-  ent_coef: 1.234637828477223e-08
+  # NOT the winning trial's value, which was 1.23e-8. See the header note on
+  # entropy collapse: at 4M that draw is harmless and at 60M it is fatal.
+  ent_coef: 0.001
   clip_range: 0.1
   n_epochs: 20
+  # Also not from the trial, which left it unset. SB3 breaks out of the epoch
+  # loop once approx_kl exceeds 1.5x this, so it bounds how far 20 epochs can
+  # move the policy in one update. The collapsed run reached approx_kl 0.25
+  # with 80% of samples clipped; 0.02 is the conventional target and would
+  # have cut those updates short.
+  target_kl: 0.02
   vf_coef: 0.6666451279183626
   policy_kwargs:
     net_arch: [256, 256, 256]

@@ -1,0 +1,31 @@
+# The progress-reward 1 Hz config started from a tight shell, 100-125 m,
+# instead of the 100-500 m one everything before it trained on.
+#
+# WHY. The 100-500 m shell spreads five times as much range over the same
+# 360-decision horizon, so an episode's difficulty varies by a factor of five
+# and a policy has to solve every distance at once. The reference results do
+# not ask that: Broida and Linares (AAS 19-462) start at 1,000 m +- 100, and
+# Dunlap et al. (JAIS 20(1) 2023) at a fixed 1,000 m in a random direction.
+# Both hold the range essentially constant and vary the direction, which is
+# what makes an approach a single learnable manoeuvre rather than a family of
+# them.
+#
+# 100-125 m is that shape at this env's scale: a +-11% spread about 112 m,
+# against +-67% about 300 m. The direction is still random -- the port is
+# drawn per episode from the five-port train split and the orbital phase from
+# a full period -- so what narrows is the distance, not the task.
+#
+# WHAT IT CHANGES DOWNSTREAM. Every range-relative number moves with it.
+# `docking/ep_min_pos_frac` is measured against each episode's own start, so it
+# stays comparable, but the null-action baseline does NOT: re-measure it with
+# pocs/null_action_baseline.py before reading any return against it, and do not
+# carry over the -405.7 figure from the 100-500 m shell. The shaped position
+# term is normalised by reward_shaping.position_scale_m (225 m), which is
+# unchanged, so a starting state now sits at roughly half the shaped cost it
+# used to.
+defaults:
+  - iss_numerical_ports_progress_1hz
+  - _self_
+
+orbit:
+  start_radius_range_m: [100.0, 125.0]
