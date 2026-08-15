@@ -7,26 +7,37 @@
 #   just sweep-init ppo_resnet          # prints the sweep id
 #   just sweep-agent <id> ppo_resnet    # one agent
 #
-# environments is the render224 variant of the config the vector sweeps
-# settled on: same iss-numerical dynamics at a 1 s control step, same
-# progress-shaped reward, same random-port distribution. Sharing the
-# environment is what lets these results be read against the vector winners
-# and against the zero-thrust baseline. progress is left at that config's own
-# -2.0 rather than swept, unlike ppo_vector: sweeping it there did not separate
-# the medians, and a dimension that buys nothing is expensive at this trial
-# count.
+# environments is the render224 variant of the close-start config: the same
+# iss-numerical dynamics at a 1 s control step and the same progress-shaped
+# reward, begun 100-125 m out rather than across a five-fold band. progress is
+# left at that config's own -2.0 rather than swept, unlike ppo_vector:
+# sweeping it there did not separate the medians, and a dimension that buys
+# nothing is expensive at this trial count.
 #
-# WHAT THIS SEARCHES, AND WHY IT IS NARROWER THAN ppo_vector. A pixel trial
-# costs ~15x a vector one per step, so this sweep affords tens of trials rather
-# than ppo_vector's 28 at eight times the horizon. Spending them on ppo_vector's
-# full ten-dimensional space would sample it too thinly to rank anything above
-# the seed spread. So everything ppo_vector already settled is pinned at
-# conf/rl/ppo_tuned.yaml's frozen values -- gamma, gae_lambda, clip_range,
-# vf_coef -- and the search covers what the observation change actually calls
-# into question: the policy width now reading 539 values instead of 27, the
-# learning rate and batch size that width interacts with, and the rollout
-# shape, which cannot be inherited because a pixel trial runs 4 envs where the
-# vector winner ran 32.
+# READ AGAINST THE RIGHT FLOOR. The zero-thrust baseline on this config is
+# -168.5 over 20 episodes and -165.2 over 5, measured with
+# pocs/null_action_baseline.py. Those are the numbers a trial has to beat, and
+# they are far above the floor on the wide-band config, because a shorter
+# start pays less progress reward for the same fraction of range closed. A
+# return from a wide-band sweep is not a comparison for anything here.
+#
+# WHAT THIS SEARCHES, AND THE COST OF SEARCHING IT. Nine dimensions, which is
+# wide for a lane whose trials cost ~15x a vector one per step and which
+# therefore affords tens of trials rather than hundreds. That is a deliberate
+# trade rather than an oversight.
+#
+# The alternative was to pin gamma, clip_range and vf_coef at the frozen
+# vector winners and search only what the observation changes. Those winners
+# were tuned across a 100-500 m start band, so on this config they are values
+# carried over from a different task, and a narrow search around them would
+# have been precise about the wrong point. Searching them buys correctness at
+# the price of resolution.
+#
+# Read the result accordingly: with this many dimensions and this trial count,
+# expect the sweep to identify a REGION -- an architecture, an order of
+# magnitude of learning rate -- rather than to rank individual configurations
+# credibly. A single winner here is a hypothesis to replicate across seeds
+# (see sweeps/sac_resnet_seeds.yaml for that pattern), not a result.
 #
 # The learner runs on CPU as it does for ppo_vector; the extractor does not.
 # sweep_trial pins it to the card (PIXEL_EXTRACTOR_DEVICE): a ResNet-18 forward
@@ -41,7 +52,7 @@
 # These specs live outside conf/ because they are wandb sweep files, not hydra
 # configs: a conf/sweep/ directory would appear in hydra's group discovery and
 # read as a config group nothing ever selects.
-name: ppo_resnet_progress1hz_500k
+name: ppo_resnet_close_500k
 program: src/owm/baselines/rl/sweep_trial.py
 command:
   - ${env}
@@ -63,7 +74,7 @@ parameters:
   obs:
     value: vector_resnet
   environments:
-    value: iss_numerical_ports_progress_1hz_render224
+    value: iss_numerical_ports_progress_1hz_close_render224
   seed:
     value: 0
   trial_timesteps:
@@ -73,21 +84,34 @@ parameters:
     # run. Re-measure before reusing this number anywhere else -- it is a
     # property of the card, the core count and the fleet width, not of PPO.
     value: 500000
-  # --- pinned at ppo_tuned's frozen values, not swept ---
-  # Written out as literals rather than left to fall through, because they
-  # would not fall through to ppo_tuned: sweep_trial composes `rl=ppo`, so an
-  # unswept hyperparameter takes conf/rl/ppo.yaml's base default. gamma there
-  # is 0.999, a dt=50 ms value -- inheriting it silently would discount a 1 Hz
-  # trial over a horizon the vector sweep already rejected in favour of 0.997.
-  gamma:
-    value: 0.997
+  # --- pinned, and why each pin survives the change of task ---
+  # Written out as literals rather than left to fall through: sweep_trial
+  # composes `rl=ppo`, so an unswept hyperparameter takes conf/rl/ppo.yaml's
+  # base default, and gae_lambda there is a dt=50 ms value.
   gae_lambda:
+    # Held at ppo_tuned's value. It smooths credit assignment over an episode,
+    # and the episode is still 360 steps of 1 s -- the close-start config
+    # changed where a trajectory begins, not how long it runs -- so this is
+    # the one member of that frozen group whose justification does not depend
+    # on the start distance.
     value: 0.9453223308741135
-  clip_range:
-    value: 0.1
-  vf_coef:
-    value: 0.6666451279183626
   # --- searched ---
+  # gamma, clip_range and vf_coef were pinned at conf/rl/ppo_tuned.yaml's
+  # frozen values, which were tuned across a 100-500 m start band. On a
+  # 100-125 m band those are values from a different task: gamma prices a
+  # horizon that is now a fifth as deep in range, and the value function
+  # clip_range and vf_coef balance is fitting a return distribution whose
+  # scale has moved -- the zero-thrust floor alone went from -395 to -168.
+  # Searching them costs dimensions this trial count feels, so read a single
+  # winner here as weaker evidence than the pixel sweep on the wide band gave.
+  gamma:
+    values: [0.9, 0.95, 0.99, 0.997]
+  clip_range:
+    values: [0.1, 0.2, 0.3]
+  vf_coef:
+    distribution: uniform
+    min: 0.2
+    max: 1.0
   policy_kwargs:
     # The headline question. vector_resnet makes the observation 539 wide
     # rather than 27, and conf/rl/ppo_resnet.yaml's [256, 256] is reasoning
@@ -125,6 +149,24 @@ parameters:
   n_epochs:
     values: [5, 10, 20]
   ent_coef:
+    # Floored at 1e-3, which is the whole point of this range. A 100M-step
+    # vector run trained at 1.23e-8 -- effectively no entropy bonus -- and its
+    # policy entropy collapsed: action sigma fell
+    # 1.00 -> 0.59 by 8M -> 0.21 by 16M -> 0.079 by 62M, entropy_loss crossed
+    # zero at 16M, and return peaked at -103 there and degraded to -741 over
+    # the following 46M steps. A value that small is harmless at a sweep
+    # horizon and fatal at a training one, so the sweep must not be able to
+    # pick it: what is being searched here is how much exploration to hold,
+    # not whether to hold any.
     distribution: log_uniform_values
-    min: 1.0e-8
+    min: 1.0e-3
     max: 1.0e-2
+  target_kl:
+    # The other half of that failure. The same run drove approx_kl to 0.55 at
+    # 16M against the 0.01-0.02 a PPO update is normally held to, with 80% of
+    # samples clipped, because n_epochs up to 20 re-uses a batch far past the
+    # point the trust region is still valid. target_kl stops the epoch loop
+    # once the update has moved that far, which bounds the damage whatever
+    # n_epochs is drawn. Pinned rather than searched: it is a safety rail, and
+    # a sweep free to raise it would just rediscover the collapse.
+    value: 0.02

@@ -9,6 +9,7 @@
 # These specs live outside conf/ because they are wandb sweep files, not hydra
 # configs: a conf/sweep/ directory would appear in hydra's group discovery and
 # read as a config group nothing ever selects.
+name: ppo_vector_close_4M
 program: src/owm/baselines/rl/sweep_trial.py
 command:
   - ${env}
@@ -44,7 +45,7 @@ parameters:
     # The progress variant, so reward_weights.progress exists for the `progress`
     # parameter below to write. Its own -2.0 is one of the values searched, and
     # 0.0 among them is exactly iss_numerical_ports_dense_1hz.
-    value: iss_numerical_ports_progress_1hz
+    value: iss_numerical_ports_progress_1hz_close
   progress:
     # Whether closing the range is paid when it is closed, and how much. 0.0 is
     # the absolute-position reward with no progress term at all; the rest price
@@ -102,9 +103,26 @@ parameters:
     min: 0.9
     max: 0.98
   ent_coef:
+    # Floored at 1e-3, which is the whole point of this range. A 100M-step run
+    # trained at 1.23e-8 -- effectively no entropy bonus -- and its policy
+    # entropy collapsed: action sigma fell 1.00 -> 0.59 by 8M -> 0.21 by 16M ->
+    # 0.079 by 62M, entropy_loss crossed zero at 16M, and return peaked at -103
+    # there and degraded to -741 over the following 46M steps. A value that
+    # small is harmless at a sweep horizon and fatal at a training one, so the
+    # sweep must not be able to pick it: what is searched here is how much
+    # exploration to hold, not whether to hold any.
     distribution: log_uniform_values
-    min: 1.0e-8
+    min: 1.0e-3
     max: 1.0e-2
+  target_kl:
+    # The other half of that failure. The same run drove approx_kl to 0.55 at
+    # 16M against the 0.01-0.02 a PPO update is normally held to, with 80% of
+    # samples clipped, because n_epochs up to 20 re-uses a batch far past the
+    # point the trust region is still valid. target_kl stops the epoch loop
+    # once the update has moved that far, which bounds the damage whatever
+    # n_epochs is drawn. Pinned rather than searched: it is a safety rail, and
+    # a sweep free to raise it would just rediscover the collapse.
+    value: 0.02
   clip_range:
     values: [0.1, 0.2, 0.3]
   n_epochs:

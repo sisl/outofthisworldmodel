@@ -7,36 +7,40 @@
 #   just sweep-init sac_resnet          # prints the sweep id
 #   just sweep-agent <id> sac_resnet    # one agent, pinned to a GPU
 #
-# environments is the render224 variant of the config the vector sweeps
-# settled on: same iss-numerical dynamics at a 1 s control step, same
-# progress-shaped reward, same random-port distribution. Sharing the
-# environment is what lets these results be read against the vector winners
-# and against the zero-thrust baseline. progress is left at that config's own
-# -2.0 rather than swept, unlike sac_vector: sweeping it there did not separate
-# the medians, and a dimension that buys nothing is expensive at this trial
-# count.
+# environments is the render224 variant of the close-start config: the same
+# iss-numerical dynamics at a 1 s control step and the same progress-shaped
+# reward, begun 100-125 m out rather than across a five-fold band. progress is
+# left at that config's own -2.0 rather than swept, unlike sac_vector:
+# sweeping it there did not separate the medians, and a dimension that buys
+# nothing is expensive at this trial count.
 #
-# WHAT THIS SEARCHES, AND WHY IT IS NARROWER THAN sac_vector. A pixel trial
-# costs ~4x a vector one per step, so this sweep affords tens of trials rather
-# than sac_vector's 35 at three times the horizon. Spending them on
-# sac_vector's full space would sample it too thinly to rank anything above the
-# 200-400 unit seed spread that sweep measured. So everything sac_vector
-# already settled is pinned at conf/rl/sac_tuned.yaml's frozen values -- gamma,
-# tau, train_freq, target_entropy -- and the search covers what the observation
-# change actually calls into question: the policy width now reading 539 values
-# instead of 27, the learning rate and batch size that width interacts with,
-# the update-to-data ratio, and how long to fill the buffer before learning
-# from frames.
+# READ AGAINST THE RIGHT FLOOR. The zero-thrust baseline on this config is
+# -168.5 over 20 episodes and -165.2 over 5, measured with
+# pocs/null_action_baseline.py. Those are the numbers a trial has to beat, and
+# they are far above the floor on the wide-band config, because a shorter
+# start pays less progress reward for the same fraction of range closed. A
+# return from a wide-band sweep is not a comparison for anything here.
 #
-# target_entropy is pinned rather than searched on sac_vector's own evidence:
-# the sac_entropy ablation swept -3/-1/0/+3 with everything else held and found
-# the within-setpoint spread larger than the differences between setpoints.
-# -12.0 is admissible, not optimal, and a pixel sweep this size cannot settle
-# it either.
+# WHAT THIS SEARCHES, AND THE COST OF SEARCHING IT. Eight dimensions, which is
+# wide for a lane whose trials cost ~4x a vector one per step and which
+# therefore affords tens of trials rather than hundreds. That is a deliberate
+# trade rather than an oversight.
 #
-# ent_coef stays adaptive and is deliberately absent from the search. Fixed
-# values diverged SAC into an actor NaN within minutes in 4 of 7 trials against
-# 0 of 3 adaptive ones; sweep target_entropy instead if it ever needs tuning.
+# The alternative was to pin gamma and tau at the frozen vector winners and
+# search only what the observation changes. Those winners were tuned across a
+# 100-500 m start band, so on this config they are values carried over from a
+# different task, and a narrow search around them would have been precise
+# about the wrong point. Searching them buys correctness at the price of
+# resolution.
+#
+# Read the result accordingly: with this many dimensions and this trial count,
+# expect the sweep to identify a REGION -- an architecture, an order of
+# magnitude of learning rate -- rather than to rank individual configurations
+# credibly. That is what the wide-band pixel sweep delivered, where
+# [512, 512, 512] took every strong result and no other architecture beat the
+# baseline at all, while the ordering within it was seed variance. A single
+# winner here is a hypothesis to replicate across seeds
+# (sweeps/sac_resnet_seeds.yaml), not a result.
 #
 # The learner runs on the GPU as it does for sac_vector, and so does the
 # extractor: sweep_trial pins it to the card (PIXEL_EXTRACTOR_DEVICE) rather
@@ -50,7 +54,7 @@
 # These specs live outside conf/ because they are wandb sweep files, not hydra
 # configs: a conf/sweep/ directory would appear in hydra's group discovery and
 # read as a config group nothing ever selects.
-name: sac_resnet_progress1hz_500k
+name: sac_resnet_close_500k
 program: src/owm/baselines/rl/sweep_trial.py
 command:
   - ${env}
@@ -72,7 +76,7 @@ parameters:
   obs:
     value: vector_resnet
   environments:
-    value: iss_numerical_ports_progress_1hz_render224
+    value: iss_numerical_ports_progress_1hz_close_render224
   seed:
     value: 0
   trial_timesteps:
@@ -82,23 +86,42 @@ parameters:
     # run. Re-measure before reusing this number anywhere else -- it is a
     # property of the card, the core count and the fleet width, not of SAC.
     value: 500000
-  # --- pinned at sac_tuned's frozen values, not swept ---
-  # Written out as literals rather than left to fall through, because they
-  # would not fall through to sac_tuned: sweep_trial composes `rl=sac`, so an
-  # unswept hyperparameter takes conf/rl/sac.yaml's base default. gamma there
-  # is 0.999, a dt=50 ms value -- inheriting it silently would discount a 1 Hz
-  # trial over a horizon the vector sweep already rejected in favour of 0.997.
-  gamma:
-    value: 0.997
-  tau:
-    value: 0.01734429982979999
+  # --- pinned, and why each pin survives the change of task ---
+  # Written out as literals rather than left to fall through: sweep_trial
+  # composes `rl=sac`, so an unswept hyperparameter takes conf/rl/sac.yaml's
+  # base default rather than anything tuned.
   train_freq:
+    # Held at 4 so gradient_steps below reads as an update-to-data ratio
+    # rather than half of one. Sweeping both would make the quantity that
+    # actually matters -- updates per transition -- a derived product of two
+    # searched dimensions, and no single trial would say what it was.
     value: 4
   target_entropy:
+    # Held on the sac_entropy ablation's evidence: sweeping -3/-1/0/+3 with
+    # everything else fixed found the within-setpoint spread larger than the
+    # differences between setpoints. That is a statement about the setpoint
+    # mattering little, which the start distance does not change.
     value: -12.0
   ent_coef:
+    # Adaptive, never a fixed value. Fixed ones diverged SAC into an actor NaN
+    # within minutes in 4 of 7 trials against 0 of 3 adaptive. The adaptation
+    # is also what holds entropy at a setpoint rather than letting it decay,
+    # which is the mechanism whose absence collapsed the PPO training run.
     value: auto
   # --- searched ---
+  # gamma and tau were pinned at conf/rl/sac_tuned.yaml's frozen values, which
+  # were tuned across a 100-500 m start band. On a 100-125 m band those are
+  # values from a different task: gamma prices a horizon a fifth as deep in
+  # range, and tau sets how fast the critic tracks a return distribution whose
+  # scale has moved -- the zero-thrust floor alone went from -395 to -168.
+  # Searching them costs dimensions this trial count feels, so read a single
+  # winner here as weaker evidence than the pixel sweep on the wide band gave.
+  gamma:
+    values: [0.9, 0.95, 0.99, 0.997]
+  tau:
+    distribution: log_uniform_values
+    min: 1.0e-3
+    max: 2.0e-2
   policy_kwargs:
     # The headline question. vector_resnet makes the observation 539 wide
     # rather than 27, and conf/rl/sac_resnet.yaml's [256, 256] is reasoning
