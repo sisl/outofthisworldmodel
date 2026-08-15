@@ -47,14 +47,14 @@
 # THE BUDGET IS SET BY WALL CLOCK, NOT BY THE SCIENCE. Measured at 267
 # env-steps/s at these settings, and SAC is bound by gradient steps rather
 # than env stepping, so more workers do not buy more throughput. 100M would be
-# ~104 h alone and longer sharing the box; 40M is what fits the window this
+# ~104 h alone and longer sharing the box; 25M is what fits the window this
 # was launched into. That is a smaller budget than ppo_tuned's 100M, so the
 # two lanes are NOT directly comparable at their frozen budgets -- compare
 # them at a common step count, or rerun this one longer.
 algo: sac
 n_envs: 16
 vec: subproc
-total_timesteps: 40000000
+total_timesteps: 25000000
 device: cuda
 # vector: the 25-dim state alone. vector_resnet: that vector with a frozen
 # pretrained ResNet's embedding of the rendered frame concatenated onto it,
