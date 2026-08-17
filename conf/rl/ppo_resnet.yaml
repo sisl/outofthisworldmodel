@@ -65,3 +65,31 @@ hyperparams:
   # have to move together, per ppo_tuned's header, so that the advantage
   # estimator sees the same trace length rather than a shorter split of it.
   n_steps: 2048
+  policy_kwargs:
+    # Wider and deeper than the vector winner, because the observation it was
+    # tuned on is not this one. ppo_tuned's [256, 256, 256] meets a 27-wide
+    # vector, where the first layer is a ten-fold EXPANSION; vector_resnet
+    # concatenates ResNet-18's 512-d feature onto that, so the same layer
+    # becomes a 2.1x compression of 539 values, applied before anything has
+    # been learned from them.
+    #
+    # The evidence for the wider shape is the one pixel sweep whose trials
+    # actually learned: on the wide-band start distribution, where the best
+    # trials beat a -395 floor by 200 points, [512, 512, 512] took five of the
+    # five strong results and every other architecture went nought for
+    # fourteen. That sweep could rank architectures because its trials had got
+    # somewhere by the time they were scored.
+    #
+    # The near-shell pixel sweep's apparent preference for narrower nets is
+    # not evidence against this. It is the same artefact as its preference for
+    # a sub-3e-5 learning rate: at a horizon where nothing learns, the best
+    # score goes to whichever policy moves least, and extra capacity is extra
+    # room to move away from an initialisation that already scores near the
+    # floor. A sweep that cannot rank configurations cannot rank their widths
+    # either.
+    #
+    # It is close to free here. Measured on this host at the width and rollout
+    # above, this shape runs 237 env-steps/s against 247 for [256, 256, 256] --
+    # 4%, or about three hours across the budget -- because the render and the
+    # frozen extractor bound this mode, not the learner's gradient step.
+    net_arch: [512, 512, 512]
