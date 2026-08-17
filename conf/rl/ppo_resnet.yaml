@@ -1,61 +1,95 @@
 # PPO on the pixel observation: the 27-wide vector with a frozen ResNet-18
-# embedding of the rendered frame concatenated onto it.
+# embedding of the rendered frame concatenated onto it (owm/envs/resnet_obs.py),
+# read by the same MlpPolicy the vector runs use. The embedding changes the
+# input width, not the algorithm.
 #
 #   just train-ppo rl=ppo_resnet \
-#     environments=iss_numerical_ports_render224 val.enabled=false
+#     environments=iss_numerical_ports_progress_1hz_near_render224 \
+#     run_dir=runs/ppo_pixel_near
 #
 # Through `just`, not a bare `uv run`: the recipes export JAX_PLATFORMS=cpu and
-# PYGFX_WGPU_ADAPTER_NAME, and this mode needs both. Without the first, XLA
-# pre-claims ~75% of every visible card -- 61 GB of an 80 GB one -- and the
-# render contexts n_envs is budgeted against have nowhere to land.
+# the render adapter name, and this mode needs both. Without the first, XLA
+# initialises a backend on every visible card and pre-claims most of it, and
+# the render contexts n_envs is budgeted against have nowhere to land.
 #
-# NOT a frozen sweep winner. docs/baselines.md's winner-freezing convention
-# covers ppo_tuned.yaml / sac_tuned.yaml; the pixel sweeps (sweeps/ppo_resnet
-# .yaml) have not been run, so there is no pixel winner to freeze. This
-# inherits ppo_tuned's hyperparameters as the best available starting point
-# and changes only what the observation change forces. Read any result from
-# it as untuned-for-pixels, and do not report it as a tuned baseline.
+# WHERE THIS CONFIGURATION COMES FROM. It inherits ppo_tuned, which is the
+# configuration that flew the vector run to a 2.29 m closest approach from a
+# 126.8 m start -- escape 0.02, no collisions, a val return of -35 against a
+# -168.5 zero-thrust floor -- and it changes only what the observation forces.
+#
+# It does NOT come from the pixel sweeps. Those ranked 212 trials at 500k steps
+# each and not one of the 26 that reached its horizon beat zero thrust, because
+# 500k is under one percent of the 70M the same task took in vector mode: at
+# that horizon nothing has learned yet, so the ranking is noise. Their one
+# strong-looking signal -- 42 of 43 surviving PPO trials drawing a learning
+# rate below 3e-5, an order of magnitude under ppo_tuned's -- is an artefact of
+# the same thing. When no configuration learns, the best score goes to the one
+# that moves least, and a tiny learning rate is how a policy stays where it
+# started. Carrying it here would be reading a horizon limit as a result.
 defaults:
   - ppo_tuned
   - _self_
 
 obs: vector_resnet
 
-# Eight, not ppo_tuned's 32. Every worker renders, and a render context takes a
-# Vulkan device worth ~1.85 GB (measured, linear in the worker count), so the
-# env count is a GPU budget here rather than a CPU one. Eight is 15.4 GB, which
-# leaves four concurrent runs inside one 80 GB card at 62 GB; sixteen would be
-# 30.7 GB each and only two would fit.
-n_envs: 8
+# Sixteen, not ppo_tuned's 32. Every worker renders, and a render context takes
+# a Vulkan device worth ~1.9 GB, so the env count is a GPU budget here rather
+# than a CPU one: 16 workers is ~30 GB, and the eval pool spikes it by ~9.5 GB
+# more while a val round runs. Measured at 247 env-steps/s against 145 at eight
+# workers, so the wider count is also what makes the budget below affordable.
+n_envs: 16
 
-# The embedding follows the learner rather than defaulting to the workers'
-# CPUs. A ResNet-18 forward per env per step is what bounds this mode's
-# throughput, and single-threaded on CPU it costs more than the render it
-# reads: moving it onto the learner's GPU measured 2.3x on its own, more than
-# doubling the worker count buys. The cost is a CUDA context per worker, a few
-# hundred MB each, which is affordable whenever the learner is on a GPU of its
-# own. Resolves to cpu when rl.device is cpu, which is the old behaviour.
+# The embedding runs on the card, and is named rather than following rl.device.
+# PPO's learner is on the CPU -- SB3's MlpPolicy is faster there, and the pixel
+# sweeps measured no throughput difference across architectures, so the learner
+# is not what bounds this mode. The extractor is: a ResNet-18 forward per env
+# per step costs more single-threaded on CPU than the render feeding it, and
+# deferring to rl.device would put it back on the workers' CPUs and halve the
+# run. Which physical card it lands on follows CUDA_VISIBLE_DEVICES, i.e.
+# OWM_GPUS; the renderer chooses its own adapter and does not honour either.
 obs_resnet:
-  device: ${rl.device}
+  device: cuda
 
-# Pixel steps cost far more than vector ones -- each is a render plus a ResNet
-# forward -- so the budget sits below the vector runs' 10M. Measured at 106
-# steps/s with four such runs sharing the pair of cards, 5M is roughly 13 hours
-# of wall clock per run.
-total_timesteps: 5000000
+# Seventy million, matching the vector run that reached the 2.29 m approach.
+# There is no evidence a pixel policy needs less -- a 539-wide observation is
+# strictly harder to learn from than the 27-wide one -- and every budget this
+# project has tried below that horizon has ended before the approach emerges.
+# At the 247 steps/s measured above this is ~79 hours; ppo_tuned checkpoints
+# every 2.5M, so `just resume <run_dir> extend_timesteps=<N>` picks it up if
+# the answer is that it needs longer still.
+total_timesteps: 70000000
 
 hyperparams:
-  # 1024 * 8 envs = the 8192-transition rollout ppo_tuned holds at 256 * 32,
-  # which is the rollout the vector winner was tuned at. n_steps and n_envs
-  # have to move together, per ppo_tuned's header -- and this pair is the
-  # winning trial's own shape read literally, so the advantage estimator
-  # matches it too rather than splitting the trace into shorter segments.
-  n_steps: 1024
+  # 2048 * 16 envs is the 32,768-transition rollout ppo_tuned holds at 1024 *
+  # 32, which is the rollout the vector winner was tuned at. n_steps and n_envs
+  # have to move together, per ppo_tuned's header, so that the advantage
+  # estimator sees the same trace length rather than a shorter split of it.
+  n_steps: 2048
   policy_kwargs:
-    # 256, not ppo_tuned's 64. The sweep preferred [64, 64] on a 27-wide
-    # observation; vector_resnet concatenates ResNet-18's 512-d avgpool
-    # feature onto that, so the policy reads 539 values and a 64-unit first
-    # layer would compress them 8.4x before anything is learned from them.
-    # 256 makes it 2.1x. This is a consequence of the observation change, not
-    # a sweep result -- the pixel sweep is what would settle it.
-    net_arch: [256, 256]
+    # Wider and deeper than the vector winner, because the observation it was
+    # tuned on is not this one. ppo_tuned's [256, 256, 256] meets a 27-wide
+    # vector, where the first layer is a ten-fold EXPANSION; vector_resnet
+    # concatenates ResNet-18's 512-d feature onto that, so the same layer
+    # becomes a 2.1x compression of 539 values, applied before anything has
+    # been learned from them.
+    #
+    # The evidence for the wider shape is the one pixel sweep whose trials
+    # actually learned: on the wide-band start distribution, where the best
+    # trials beat a -395 floor by 200 points, [512, 512, 512] took five of the
+    # five strong results and every other architecture went nought for
+    # fourteen. That sweep could rank architectures because its trials had got
+    # somewhere by the time they were scored.
+    #
+    # The near-shell pixel sweep's apparent preference for narrower nets is
+    # not evidence against this. It is the same artefact as its preference for
+    # a sub-3e-5 learning rate: at a horizon where nothing learns, the best
+    # score goes to whichever policy moves least, and extra capacity is extra
+    # room to move away from an initialisation that already scores near the
+    # floor. A sweep that cannot rank configurations cannot rank their widths
+    # either.
+    #
+    # It is close to free here. Measured on this host at the width and rollout
+    # above, this shape runs 237 env-steps/s against 247 for [256, 256, 256] --
+    # 4%, or about three hours across the budget -- because the render and the
+    # frozen extractor bound this mode, not the learner's gradient step.
+    net_arch: [512, 512, 512]
