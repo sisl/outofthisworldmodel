@@ -132,12 +132,21 @@ def fetch_series(run) -> dict[str, Series]:
         if criterion.step_key is not None:
             steps = np.array([row[criterion.step_key] for row in rows], dtype=np.float64)
         else:
-            # Placed by wandb's own monotonic row counter: both series are
-            # rows of one history, so a docking row between two rollout rows
-            # was logged between the training steps they report.
-            steps = np.interp(
-                [row["_step"] for row in rows], row_steps, train_steps
-            )
+            # Placed by wandb's own monotonic row counter: both series are rows
+            # of one history, so a docking row between two rollout rows was
+            # logged between the training steps they report.
+            #
+            # Two things this assumes, both cheap to check against a real run.
+            # The anchor knots must be dense against the window: an on-policy
+            # learner logs one rollout row per update, thousands over a long
+            # run, against a window measured in millions of steps -- so the
+            # interpolation error inside a window is far below the noise the
+            # window exists to average out. And `np.interp` CLAMPS: a row
+            # logged before the first anchor row or after the last is pinned to
+            # that endpoint's training step rather than extrapolated, which is
+            # the right answer for the handful of rows that precede the first
+            # update and would be a wrong one if a series outran the anchor.
+            steps = np.interp([row["_step"] for row in rows], row_steps, train_steps)
         series[name] = Series(steps=steps, values=values)
     return series
 
@@ -189,7 +198,11 @@ def default_window(steps: list[int]) -> int:
     """
     if len(steps) < 2:
         return max(1, steps[0] // 2)
-    return int(np.median(np.diff(steps)) // 2)
+    # Never zero: candidates saved at the same step -- a finished run whose
+    # finals landed exactly on its last checkpoint -- give a zero median
+    # spacing, and a zero-width window silently degrades every criterion to
+    # the single nearest sample.
+    return max(1, int(np.median(np.diff(steps)) // 2))
 
 
 def rank(run_dir: Path, run, window: int | None) -> tuple[list[Candidate], int]:
@@ -317,6 +330,11 @@ def main(
     upload: bool, repo_id: str | None,
 ) -> None:
     """Rank RUN_DIR's checkpoints on its wandb history and keep the best one."""
+    if window is not None and window < 0:
+        # A negative half-width matches no sample, which would quietly demote
+        # every criterion to its single nearest reading rather than the
+        # centred mean the ranking is documented to use.
+        raise click.UsageError(f"--window must be >= 0, got {window}")
     run = open_run(run_dir)
     scored, span = rank(run_dir, run, window)
     chosen = best(scored, criterion)
