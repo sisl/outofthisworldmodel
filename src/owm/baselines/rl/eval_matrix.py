@@ -60,6 +60,7 @@ from owm.baselines.rl.dock_criteria import (
     definitions,
 )
 from owm.baselines.rl.evaluate import load_normalizer, resolve_checkpoint
+from owm.baselines.rl.run_state import load_run_config
 from owm.baselines.rl.train import ALGOS
 from owm.envs.factory import (
     DEFAULT_ENV_NAME,
@@ -73,7 +74,6 @@ from owm.envs.factory import (
 load_dotenv()
 
 ENV_RECORD = "env_config.yaml"
-RUN_CONFIG = "config.yaml"
 
 
 @dataclass
@@ -113,11 +113,6 @@ def run_dir_for(ckpt: Path, given: str | None) -> Path:
         "eval_matrix.run_dir=<dir> (a checkpoint fetched from the hub always "
         "needs this)."
     )
-
-
-def run_config(run_dir: Path) -> DictConfig | None:
-    path = run_dir / RUN_CONFIG
-    return OmegaConf.load(path) if path.exists() else None
 
 
 def base_env_conf(run_dir: Path, run_cfg: DictConfig | None) -> dict:
@@ -471,7 +466,7 @@ def run_eval_matrix(cfg: DictConfig) -> dict:
 
     ckpt = resolve_checkpoint(str(settings.checkpoint))
     run_dir = run_dir_for(ckpt, settings.run_dir)
-    run_cfg = run_config(run_dir)
+    run_cfg = load_run_config(run_dir)
     base = at_rate(base_env_conf(run_dir, run_cfg), settings.rate_hz)
     task = env_config(base)
 
