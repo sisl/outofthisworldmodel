@@ -17,7 +17,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from omegaconf import DictConfig, OmegaConf
+
 CHECKPOINT_DIR = "checkpoints"
+RUN_CONFIG = "config.yaml"
 NAME_PREFIX = "model"
 FINAL_MODEL = "final_model.zip"
 FINAL_VECNORM = "vecnormalize.pkl"
@@ -26,6 +29,18 @@ FINAL_REPLAY_BUFFER = "final_replay_buffer.pkl"
 FINAL_STEPS = "final_steps.txt"
 _WANDB_ID_FILE = "wandb_run_id.txt"
 _STEP_RE = re.compile(rf"^{NAME_PREFIX}_(\d+)_steps\.zip$")
+
+
+def load_run_config(run_dir: Path) -> DictConfig | None:
+    """The run's resolved hydra config, or None on a run dir predating it.
+
+    None rather than an error: `env_config.yaml` is the record a consumer
+    actually needs, and a run that has one but no saved hydra config is still
+    evaluable — the caller falls back for the handful of fields this file is
+    the only source of.
+    """
+    path = run_dir / RUN_CONFIG
+    return OmegaConf.load(path) if path.exists() else None
 
 
 def save_wandb_id(run_dir: Path, run_id: str) -> None:

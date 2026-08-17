@@ -123,6 +123,15 @@ just promote runs/ppo_70M_near --name owm-iss-numerical-v1-coop-ppo-vector \
     --repo-id sislaboratory/owm-rl-baselines
 ```
 
+Every upload rebuilds the repo's root `README.md`, which is what the Hub renders
+as its model card — a repo whose files all sit under a path prefix otherwise
+shows an empty card and a root listing of one folder, which reads as an empty
+repo to anyone who did not upload it. The card is rebuilt from the
+`promotion.yaml` records already in the repo rather than from an index kept
+beside them, so it cannot fall out of step with what is actually published, and
+each record carries the algorithm, observation mode, environment and horizon
+that produced its checkpoint.
+
 ## Sweeps
 
 Bayesian hyperparameter search for both baselines, run by wandb:

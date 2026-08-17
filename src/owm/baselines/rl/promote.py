@@ -39,24 +39,30 @@ import click
 import numpy as np
 import wandb
 from dotenv import load_dotenv
-from omegaconf import DictConfig, OmegaConf
+from huggingface_hub import HfApi, hf_hub_download
+from omegaconf import OmegaConf
 
-from owm.baselines.rl.hub import upload_run
+from owm.baselines.rl.hub import upload_model_card, upload_run
 from owm.baselines.rl.run_state import (
     FINAL_MODEL,
     FINAL_VECNORM,
+    RUN_CONFIG,
     checkpoints,
     load_final_steps,
+    load_run_config,
     load_wandb_id,
     vecnormalize_for,
 )
+from owm.envs.factory import ENV_NAME_KEY
 
 load_dotenv()
 
 BEST_ROOT = Path("runs/best")
 PROMOTION_RECORD = "promotion.yaml"
 ENV_RECORD = "env_config.yaml"
-RUN_CONFIG = "config.yaml"
+# Where promoted checkpoints live in the hub repo, clear of the `rl/<run>`
+# prefix a whole training run publishes under.
+HUB_PREFIX = "rl/best"
 
 # How many history rows to pull per series. The per-episode docking series is
 # the long one -- a 70M-step run logs it hundreds of thousands of times -- and
@@ -254,6 +260,32 @@ def table(scored: list[Candidate], chosen: Candidate, criterion: str) -> str:
     return "\n".join(lines)
 
 
+def policy_facts(run_dir: Path) -> dict:
+    """What the published checkpoint IS, read off the run's own saved config.
+
+    Recorded into `promotion.yaml` so the artifact is self-describing: the
+    model card is rebuilt from these records alone, and a checkpoint that has
+    outlived its run directory can still say which environment and observation
+    mode produced it.
+    """
+    saved = load_run_config(run_dir)
+    if saved is None:
+        return {}
+    environments = saved.get("environments") or {}
+    ports = [
+        entry if isinstance(entry, str) else entry.get("name")
+        for entry in (OmegaConf.select(saved, "environments.dock.ports") or [])
+    ]
+    return {
+        "algo": str(OmegaConf.select(saved, "rl.algo") or "unknown"),
+        "obs": str(OmegaConf.select(saved, "rl.obs") or "vector"),
+        "env": str(environments.get(ENV_NAME_KEY, "iss")),
+        "dt_s": float(environments.get("dt", 0.0)) or None,
+        "train_ports": ports,
+        "timesteps": int(OmegaConf.select(saved, "rl.total_timesteps") or 0) or None,
+    }
+
+
 def promote(
     run_dir: Path,
     chosen: Candidate,
@@ -287,6 +319,7 @@ def promote(
     OmegaConf.save(
         OmegaConf.create({
             "name": name,
+            "policy": policy_facts(run_dir),
             "run": run_dir.name,
             "source": str(chosen.model),
             "step": chosen.step,
@@ -301,19 +334,130 @@ def promote(
     return destination
 
 
+def published_records(repo_id: str) -> list[dict]:
+    """Every promoted checkpoint's `promotion.yaml`, read back off the repo.
+
+    The card is rebuilt from the artifacts themselves rather than from a
+    separate index kept beside them: a record and the checkpoint it describes
+    are uploaded together, so there is no second file to fall out of step with
+    what is actually published.
+    """
+    api = HfApi()
+    wanted = [
+        name for name in api.list_repo_files(repo_id, repo_type="model")
+        if name.startswith(f"{HUB_PREFIX}/") and name.endswith(f"/{PROMOTION_RECORD}")
+    ]
+    records = []
+    for name in sorted(wanted):
+        local = hf_hub_download(repo_id=repo_id, filename=name, repo_type="model")
+        record = OmegaConf.to_container(OmegaConf.load(local), resolve=True)
+        record.setdefault("name", name.split("/")[-2])
+        records.append(record)
+    return records
+
+
+def _cell(value) -> str:
+    if value is None or value == "":
+        return "—"
+    if isinstance(value, float):
+        return f"{value:.3g}"
+    if isinstance(value, int):
+        return f"{value:,}"
+    return str(value)
+
+
+def render_card(repo_id: str, records: list[dict]) -> str:
+    """The repo's model card: what is in here, and how to run it."""
+    lines = [
+        "---",
+        "library_name: stable-baselines3",
+        "tags:",
+        "- reinforcement-learning",
+        "- robotics",
+        "- spacecraft-docking",
+        "---",
+        "",
+        "# OWM RL baselines",
+        "",
+        "Reinforcement-learning baselines for the "
+        "[owm-envs](https://github.com/sisl/outofthisworldmodel-envs) ISS docking "
+        "task, trained and published by "
+        "[outofthisworldmodel](https://github.com/sisl/outofthisworldmodel).",
+        "",
+        "These are **baselines**, not world models. Each entry is the best "
+        "checkpoint of a finished run, chosen on that run's own wandb history "
+        "rather than its final step -- PPO's entropy collapses partway through a "
+        "long run, so the last checkpoint is often well past the peak.",
+        "",
+        "## Checkpoints",
+        "",
+        "| name | algo | obs | env | trained steps | promoted step | chosen on |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for record in records:
+        policy = record.get("policy") or {}
+        lines.append(
+            f"| `{record['name']}` | {_cell(policy.get('algo'))} | "
+            f"{_cell(policy.get('obs'))} | {_cell(policy.get('env'))} | "
+            f"{_cell(policy.get('timesteps'))} | {_cell(record.get('step'))} | "
+            f"{_cell(record.get('criterion'))} |"
+        )
+    lines += [
+        "",
+        "Each lives under `" + HUB_PREFIX + "/<name>/` and ships `final_model.zip`, "
+        "its `vecnormalize.pkl` statistics, the run's `config.yaml` and "
+        "`env_config.yaml`, and a `promotion.yaml` recording which run and step it "
+        "came from and what it scored.",
+        "",
+        "The statistics are not optional. These policies were trained on "
+        "normalized observations, so loading `final_model.zip` without its "
+        "`vecnormalize.pkl` sibling scores a transform mismatch rather than a "
+        "policy -- which is why both files keep the names the loader looks for.",
+        "",
+        "## Usage",
+        "",
+        "```bash",
+        f"just eval hf:{repo_id}/{HUB_PREFIX}/<name>/{FINAL_MODEL}",
+        "",
+        "# per-port, under every definition of a successful dock",
+        "just eval-matrix runs/best/<name>/" + FINAL_MODEL,
+        "```",
+        "",
+        "## Provenance",
+        "",
+        "| name | run | wandb |",
+        "| --- | --- | --- |",
+    ]
+    for record in records:
+        url = record.get("wandb") or ""
+        link = f"[run]({url})" if url else "—"
+        lines.append(f"| `{record['name']}` | `{_cell(record.get('run'))}` | {link} |")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def publish_card(repo_id: str) -> None:
+    """Rebuild and upload the card from everything now in the repo."""
+    records = published_records(repo_id)
+    if not records:
+        return
+    upload_model_card(repo_id, render_card(repo_id, records))
+
+
 def open_run(run_dir: Path):
     """The wandb run this directory recorded, through its own saved config."""
     run_id = load_wandb_id(run_dir)
     if run_id is None:
         raise SystemExit(f"{run_dir} has no wandb_run_id.txt, so its history cannot be read")
-    config = run_dir / RUN_CONFIG
-    if not config.exists():
+    saved = load_run_config(run_dir)
+    if saved is None:
         raise SystemExit(f"{run_dir} has no {RUN_CONFIG}, so its wandb project is unknown")
-    saved: DictConfig = OmegaConf.load(config)
     entity = OmegaConf.select(saved, "logging.entity")
     project = OmegaConf.select(saved, "logging.project")
     if not entity or not project:
-        raise SystemExit(f"{config} records no logging.entity/logging.project")
+        raise SystemExit(
+            f"{run_dir / RUN_CONFIG} records no logging.entity/logging.project"
+        )
     return wandb.Api().run(f"{entity}/{project}/{run_id}")
 
 
@@ -368,9 +512,12 @@ def main(
     print(upload_run(
         destination,
         repo_id,
-        path_in_repo=f"rl/best/{destination.name}",
+        path_in_repo=f"{HUB_PREFIX}/{destination.name}",
         extra_files=(ENV_RECORD, PROMOTION_RECORD),
     ))
+    # After the upload, so the card describes what is actually in the repo --
+    # including this checkpoint -- rather than what was there a moment ago.
+    publish_card(repo_id)
 
 
 if __name__ == "__main__":

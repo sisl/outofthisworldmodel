@@ -64,6 +64,24 @@ def upload_run(
     return f"https://huggingface.co/{repo_id}/tree/main/{destination}"
 
 
+def upload_model_card(repo_id: str, text: str) -> None:
+    """Write the repo's root `README.md`, which is what the Hub renders as its
+    model card.
+
+    A repo whose files all sit under a path prefix shows an empty card and a
+    root listing of one folder, which reads as an empty repo to anyone who did
+    not upload it. The card is the only place the Hub will show what is in
+    there without clicking through.
+    """
+    HfApi().upload_file(
+        path_or_fileobj=text.encode(),
+        path_in_repo="README.md",
+        repo_id=repo_id,
+        repo_type="model",
+        commit_message="Update model card",
+    )
+
+
 @click.command()
 @click.argument("run_dir", type=click.Path(path_type=Path))
 @click.argument("repo_id", required=False, default=None)
