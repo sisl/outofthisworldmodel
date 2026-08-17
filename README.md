@@ -138,6 +138,53 @@ episode), `outcomes.csv` (one row per episode × criteria × tolerance),
 `meta.yaml`. Long form rather than one wide table, so a plot or a table is a
 filter rather than a reshape.
 
+### Evaluating a world-model policy, or any other
+
+Everything from the rollout outwards is already policy-agnostic. `dock_criteria`
+reads `info["goal_error_true"]` and nothing else, and the scoring, the CSVs and
+the report never learn what produced an action. What is SB3-specific is exactly
+three lines in `eval_matrix.run_eval_matrix`:
+
+```python
+model   = ALGOS[algo].load(ckpt, device="cpu")     # SB3 PPO/SAC loader
+vecnorm = load_normalizer(ckpt, ...)               # VecNormalize pickle sibling
+...
+actions, _ = model.predict(norm, deterministic=True)   # in rollout_port
+```
+
+To add a second policy family, give it a loader returning any object with a
+`predict(obs, deterministic=...) -> (actions, state)` and select on something
+recorded in the run — `rl.algo` today, a `policy.kind` key for a world model —
+rather than widening `ALGOS`, which is training's table and means "which SB3
+class trains this".
+
+**One genuine gap to close first.** SB3's `MlpPolicy` is stateless, so
+`rollout_port` never resets the policy between episodes. A world-model policy
+carries recurrent latent state, and a vec env auto-resets a finished slot, so
+that slot's next episode would begin with the previous one's latent unless the
+loop clears it. The place to do that is where `live &= ~dones` already runs: the
+`dones` mask is exactly the set of slots whose state must be dropped. Until a
+stateful policy exists there is nothing to reset, which is why the hook is
+described here rather than written.
+
+**What makes two runs comparable.** Hold `seed`, `ports`, `trials`, `rate_hz`
+and the environment record fixed; `meta.yaml` records all five, so two result
+directories can be checked for agreement before their `summary.csv` files are
+put side by side. Ports are seeded from owm-envs' `PORTS` table rather than
+from the request, so two policies evaluated on the same seed fly *the same
+episodes* — the comparison is paired, and a per-port difference is a difference
+between policies rather than between draws.
+
+**Rate is the trap.** A world-model policy running at 20 Hz and an RL baseline
+trained at 1 Hz do not compare at one setting, they compare at two, and the
+honest report gives both. `rate_hz=20 action_repeat=20` flies the 1 Hz policy at
+its trained cadence over the same integration as the world model — equal
+decisions, so the comparison isolates the policy. `rate_hz=20 action_repeat=1`
+gives both policies the same 20 Hz control authority — equal authority, so it
+measures what each is worth at the rate the system will actually run. The first
+flatters the baseline, the second flatters whichever policy was trained at
+20 Hz; neither is the comparison on its own.
+
 ## Promoting a run's best checkpoint
 
 A finished run's best policy is not its last one — PPO's entropy collapses
