@@ -104,13 +104,24 @@ All three are printed for every candidate, because they disagree and that
 disagreement is informative: return is dominated by shaping cost on a run that
 never docks, while closest approach reads only whether the policy closed.
 
-The winner is copied to `runs/best/<run_name>/` as `final_model.zip` and
+The winner is copied to `runs/best/<name>/` as `final_model.zip` and
 `vecnormalize.pkl`, beside the run's `config.yaml`, `env_config.yaml` and a
 `promotion.yaml` recording where it came from. Under the finals' names
 deliberately: `vecnormalize_name_for` recognises only `final_model.zip` and
 `model_<N>_steps.zip`, so a file named for its step and score would lose its
 statistics sibling and be refused by every entry point that loads it. Upload
-goes to `rl/best/<run_name>/` on the Hub, clear of the run's own `rl/<run_name>/`.
+goes to `rl/best/<name>/` on the Hub, clear of the run's own `rl/<run_dir>/`.
+
+`--name` is the published identity and defaults to the run directory's, which
+is a working name: `ppo_70M_near` says how long a run was and which shell it
+flew, and nothing about the environment, observation mode or goal setup that
+produced the policy. A checkpoint outlives the directory it came out of, so
+name it for what it is —
+
+```bash
+just promote runs/ppo_70M_near --name owm-iss-numerical-v1-coop-ppo-vector \
+    --repo-id sislaboratory/owm-rl-baselines
+```
 
 ## Sweeps
 

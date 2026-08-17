@@ -261,24 +261,32 @@ def promote(
     window: int,
     wandb_url: str,
     out_root: Path,
+    name: str,
 ) -> Path:
-    """Copy the chosen policy into `out_root/<run name>/` under the finals' names.
+    """Copy the chosen policy into `out_root/<name>/` under the finals' names.
 
     Under the finals' names deliberately: `vecnormalize_name_for` recognises
     only `final_model.zip` and `model_<N>_steps.zip`, so a promoted file named
     for its step and score would lose its statistics sibling and be refused by
     every evaluation entry point that loads it.
+
+    `name` is the published identity and defaults to the run directory's, which
+    is a working name -- `ppo_70M_near` says how long a run was and which shell
+    it flew, and nothing about which environment, observation mode or goal
+    setup produced the policy. A checkpoint outlives the directory it came out
+    of, so what it is published as is worth naming separately.
     """
-    destination = out_root / run_dir.name
+    destination = out_root / name
     destination.mkdir(parents=True, exist_ok=True)
     shutil.copy2(chosen.model, destination / FINAL_MODEL)
     shutil.copy2(chosen.stats, destination / FINAL_VECNORM)
-    for name in (RUN_CONFIG, ENV_RECORD):
-        source = run_dir / name
+    for record in (RUN_CONFIG, ENV_RECORD):
+        source = run_dir / record
         if source.exists():
-            shutil.copy2(source, destination / name)
+            shutil.copy2(source, destination / record)
     OmegaConf.save(
         OmegaConf.create({
+            "name": name,
             "run": run_dir.name,
             "source": str(chosen.model),
             "step": chosen.step,
@@ -322,12 +330,17 @@ def open_run(run_dir: Path):
 )
 @click.option("--out", "out_root", type=click.Path(path_type=Path), default=BEST_ROOT,
               show_default=True, help="Where the promoted directory is written.")
+@click.option(
+    "--name", default=None,
+    help="Published name for the checkpoint, used for both the promoted "
+         "directory and its path on the hub [default: the run directory's name].",
+)
 @click.option("--upload/--no-upload", default=True, show_default=True,
               help="Publish the promoted directory to the HF Hub.")
 @click.option("--repo-id", default=None, help="HF model repo [default: $OWM_HF_MODEL_REPO].")
 def main(
     run_dir: Path, criterion: str, window: int | None, out_root: Path,
-    upload: bool, repo_id: str | None,
+    name: str | None, upload: bool, repo_id: str | None,
 ) -> None:
     """Rank RUN_DIR's checkpoints on its wandb history and keep the best one."""
     if window is not None and window < 0:
@@ -341,7 +354,9 @@ def main(
     print(table(scored, chosen, criterion))
     print(f"window: +-{span} steps")
 
-    destination = promote(run_dir, chosen, criterion, span, run.url, out_root)
+    destination = promote(
+        run_dir, chosen, criterion, span, run.url, out_root, name or run_dir.name
+    )
     print(f"\npromoted {chosen.model} -> {destination}")
 
     if not upload:
