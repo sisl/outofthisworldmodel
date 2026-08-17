@@ -63,7 +63,7 @@ def clear_final_steps(run_dir: Path) -> None:
     (run_dir / FINAL_STEPS).unlink(missing_ok=True)
 
 
-def _checkpoints(run_dir: Path) -> list[tuple[int, Path]]:
+def checkpoints(run_dir: Path) -> list[tuple[int, Path]]:
     """Every checkpoint zip in the run dir, highest step count first."""
     ckpt_dir = run_dir / CHECKPOINT_DIR
     if not ckpt_dir.is_dir():
@@ -77,7 +77,7 @@ def _checkpoints(run_dir: Path) -> list[tuple[int, Path]]:
 
 
 def latest_checkpoint(run_dir: Path) -> Path | None:
-    found = _checkpoints(run_dir)
+    found = checkpoints(run_dir)
     return found[0][1] if found else None
 
 
@@ -102,7 +102,7 @@ def missing_siblings(ckpt: Path, need_replay_buffer: bool) -> list[str]:
 
 def latest_complete_checkpoint(run_dir: Path, need_replay_buffer: bool) -> Path | None:
     """Highest-step checkpoint that still has every file a resume needs."""
-    for _, path in _checkpoints(run_dir):
+    for _, path in checkpoints(run_dir):
         if not missing_siblings(path, need_replay_buffer):
             return path
     return None

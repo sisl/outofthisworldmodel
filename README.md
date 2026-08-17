@@ -36,6 +36,7 @@ just train-sac [ARGS...]     # fresh SAC run   (owm.baselines.rl.train rl=sac)
 just resume RUN_DIR [ARGS...]  # resume a crashed/stopped run
 just smoke                   # tiny offline PPO run, no hub upload
 just eval CKPT [ARGS...]     # evaluate a checkpoint
+just promote RUN_DIR [ARGS...]   # keep and publish a run's best checkpoint
 just sweep-init SWEEP        # create a wandb sweep, print its id
 just sweep-agent ID SWEEP    # run one sweep agent (see Sweeps below)
 just test                    # pytest, network tests deselected
@@ -77,6 +78,39 @@ as-run config instead of the committed inline config, add
 follows whatever horizon the data carries. Note: the `-trial` dataset
 predates the 360 s horizon change (`max_steps` 12000 vs the current 7200),
 so evaluating against it needs a matching env override.
+
+## Promoting a run's best checkpoint
+
+A finished run's best policy is not its last one — PPO's entropy collapses
+partway through a long run, and everything after that point is worse than what
+came before.
+
+```bash
+just promote runs/ppo_70M_near                      # ranks, keeps, publishes
+just promote runs/ppo_70M_near --criterion min_pos --no-upload
+```
+
+Ranking reads the run's own wandb history rather than flying fresh rollouts,
+scoring every checkpoint (and the finals) over the window of history centred
+on its own step — half the run's checkpoint spacing by default:
+
+| criterion | series | direction |
+| --- | --- | --- |
+| `val_return` | `val/mean_return` | maximize (default) |
+| `train_return` | `rollout/ep_rew_mean` | maximize |
+| `min_pos` | `docking/ep_min_pos_m` | minimize |
+
+All three are printed for every candidate, because they disagree and that
+disagreement is informative: return is dominated by shaping cost on a run that
+never docks, while closest approach reads only whether the policy closed.
+
+The winner is copied to `runs/best/<run_name>/` as `final_model.zip` and
+`vecnormalize.pkl`, beside the run's `config.yaml`, `env_config.yaml` and a
+`promotion.yaml` recording where it came from. Under the finals' names
+deliberately: `vecnormalize_name_for` recognises only `final_model.zip` and
+`model_<N>_steps.zip`, so a file named for its step and score would lose its
+statistics sibling and be refused by every entry point that loads it. Upload
+goes to `rl/best/<run_name>/` on the Hub, clear of the run's own `rl/<run_name>/`.
 
 ## Sweeps
 
