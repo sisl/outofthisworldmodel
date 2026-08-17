@@ -63,6 +63,11 @@ smoke:
 eval CKPT *ARGS:
     uv run python -m owm.baselines.rl.evaluate eval.checkpoint={{CKPT}} {{ARGS}}
 
+# Evaluate a checkpoint per port, under every success definition
+eval-matrix CKPT *ARGS:
+    uv run python -m owm.baselines.rl.eval_matrix \
+        eval_matrix.checkpoint={{CKPT}} {{ARGS}}
+
 # Rank a finished run's checkpoints on its wandb history, keep and publish the best
 promote RUN_DIR *ARGS:
     uv run python -m owm.baselines.rl.promote {{RUN_DIR}} {{ARGS}}

@@ -36,6 +36,7 @@ just train-sac [ARGS...]     # fresh SAC run   (owm.baselines.rl.train rl=sac)
 just resume RUN_DIR [ARGS...]  # resume a crashed/stopped run
 just smoke                   # tiny offline PPO run, no hub upload
 just eval CKPT [ARGS...]     # evaluate a checkpoint
+just eval-matrix CKPT [ARGS...]  # evaluate it per port, under every dock definition
 just promote RUN_DIR [ARGS...]   # keep and publish a run's best checkpoint
 just sweep-init SWEEP        # create a wandb sweep, print its id
 just sweep-agent ID SWEEP    # run one sweep agent (see Sweeps below)
@@ -78,6 +79,57 @@ as-run config instead of the committed inline config, add
 follows whatever horizon the data carries. Note: the `-trial` dataset
 predates the 360 s horizon change (`max_steps` 12000 vs the current 7200),
 so evaluating against it needs a matching env override.
+
+## Evaluating a policy
+
+`just eval` answers one question — mean return and success rate over N
+episodes, port drawn at random. `just eval-matrix` answers the ones a run that
+rarely docks is actually being asked: which port it can reach, and how close
+it got when it missed.
+
+```bash
+just eval-matrix runs/best/ppo_70M_near/final_model.zip
+just eval-matrix runs/best/ppo_70M_near/final_model.zip \
+    eval_matrix.rate_hz=20 eval_matrix.action_repeat=20
+```
+
+It flies `eval_matrix.trials` deterministic episodes per port, with
+`dock.ports` narrowed to **one port at a time** so that count is exact rather
+than an expectation, over all eight ports owm-envs knows. Five of them are the
+`iss_numerical_ports` train split; the other three the policy never saw, and
+every result carries a `train`/`heldout` tag.
+
+Each episode is scored under twelve success definitions — three criteria
+(`position`, `position_velocity`, `full`) across four position tolerances
+(0.1, 1, 2, 5 m), so `full` at 0.1 m is the environment's own dock gate and
+the rest relax it by dropping tests or widening the position bound.
+
+One rollout per (port, trial) scores all twelve **exactly**. The gates reach an
+episode only through termination — observation, dynamics and a deterministic
+policy are the same whatever bounds are configured — and a looser definition is
+satisfied at or before the armed gate fires, over a trajectory identical up to
+that instant. Re-running the environment per definition would cost eight times
+as much and produce the same numbers.
+
+`collision_terminates` is false on these configs, so an episode can clip the
+hull on its way to a port that sits on it. Every episode carries
+`ever_collided` and every success rate is reported both raw and
+collision-voided.
+
+The environment is the run's own `env_config.yaml`, found beside the
+checkpoint (name it with `eval_matrix.run_dir=` for a checkpoint fetched from
+the hub). `eval_matrix.rate_hz` re-times `dt` and `max_steps` together, holding
+the horizon in seconds — it exists because world-model policies will run at
+20 Hz. `eval_matrix.action_repeat` is independent: a 1 Hz-trained policy at
+`rate_hz=20 action_repeat=20` flies its trained cadence over finer
+integration, while `action_repeat=1` asks it for twenty times the decisions.
+Both default to the run's own rate and one decision per step.
+
+Results land in `runs/evals/<run>_<timestamp>/`: `episodes.csv` (one row per
+episode), `outcomes.csv` (one row per episode × criteria × tolerance),
+`summary.csv` (one row per port × criteria × tolerance), `report.md` and
+`meta.yaml`. Long form rather than one wide table, so a plot or a table is a
+filter rather than a reshape.
 
 ## Promoting a run's best checkpoint
 
