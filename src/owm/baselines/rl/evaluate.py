@@ -68,25 +68,30 @@ def stats_for_checkpoint(ckpt: Path) -> Path | None:
     return sibling if sibling.exists() else None
 
 
+def load_normalizer(ckpt: Path, allow_unnormalized: bool):
+    """The observation transform training used, or None when there is none."""
+    stats = stats_for_checkpoint(ckpt)
+    if stats is None:
+        if not allow_unnormalized:
+            raise SystemExit(
+                f"no VecNormalize stats found next to {ckpt}; a policy trained on "
+                "normalized observations cannot be evaluated on raw ones — pass "
+                "eval.allow_unnormalized=true to override"
+            )
+        return None
+    # The pickled VecNormalize normalizes standalone (__setstate__ drops only
+    # its venv), so eval reuses training's own transform rather than a
+    # hand-rolled copy that could drift from it.
+    with open(stats, "rb") as f:
+        vecnorm = pickle.load(f)
+    vecnorm.training = False
+    return vecnorm
+
+
 def run_eval(cfg: DictConfig) -> dict:
     ckpt = resolve_checkpoint(str(cfg.eval.checkpoint))
     model = ALGOS[cfg.rl.algo].load(ckpt, device="cpu")
-
-    stats = stats_for_checkpoint(ckpt)
-    if stats is None and not bool(cfg.eval.allow_unnormalized):
-        raise SystemExit(
-            f"no VecNormalize stats found next to {ckpt}; a policy trained on "
-            "normalized observations cannot be evaluated on raw ones — pass "
-            "eval.allow_unnormalized=true to override"
-        )
-    vecnorm = None
-    if stats is not None:
-        # The pickled VecNormalize normalizes standalone (__setstate__ drops
-        # only its venv), so eval reuses training's own transform rather than
-        # a hand-rolled copy that could drift from it.
-        with open(stats, "rb") as f:
-            vecnorm = pickle.load(f)
-        vecnorm.training = False
+    vecnorm = load_normalizer(ckpt, bool(cfg.eval.allow_unnormalized))
 
     record = cfg.eval.video_path is not None
     env = make_env(env_config(cfg.environments), seed=int(cfg.seed), render=record)
