@@ -10,6 +10,7 @@ failed or was skipped, republish it manually:
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from pathlib import Path
 
 import click
@@ -25,7 +26,20 @@ load_dotenv()
 _UPLOAD_FILES = (FINAL_MODEL, FINAL_VECNORM, "config.yaml")
 
 
-def upload_run(run_dir: Path, repo_id: str) -> str:
+def upload_run(
+    run_dir: Path,
+    repo_id: str,
+    path_in_repo: str | None = None,
+    extra_files: Sequence[str] = (),
+) -> str:
+    """Publish `run_dir`'s finals, under `rl/<dir name>` unless told otherwise.
+
+    `path_in_repo` is what keeps a promoted checkpoint from overwriting the run
+    it was drawn from: both directories are named for the run, so the default
+    would put them at the same place in the repo. `extra_files` are published
+    when present and never required, which is how a promoted directory ships
+    the record of where it came from.
+    """
     # allow_patterns silently uploads whatever subset happens to be there, so a
     # crashed or half-written run would publish a model with no normalization
     # statistics — loadable, and wrong. Check before the repo is even created.
@@ -36,17 +50,36 @@ def upload_run(run_dir: Path, repo_id: str) -> str:
             "partial run"
         )
 
+    destination = path_in_repo if path_in_repo is not None else f"rl/{run_dir.name}"
     api = HfApi()  # token from HF_TOKEN or the local login
     api.create_repo(repo_id, repo_type="model", private=True, exist_ok=True)
     api.upload_folder(
         repo_id=repo_id,
         repo_type="model",
         folder_path=str(run_dir),
-        path_in_repo=f"rl/{run_dir.name}",
-        allow_patterns=list(_UPLOAD_FILES),
+        path_in_repo=destination,
+        allow_patterns=[*_UPLOAD_FILES, *extra_files],
         commit_message=f"Upload RL run {run_dir.name}",
     )
-    return f"https://huggingface.co/{repo_id}/tree/main/rl/{run_dir.name}"
+    return f"https://huggingface.co/{repo_id}/tree/main/{destination}"
+
+
+def upload_model_card(repo_id: str, text: str) -> None:
+    """Write the repo's root `README.md`, which is what the Hub renders as its
+    model card.
+
+    A repo whose files all sit under a path prefix shows an empty card and a
+    root listing of one folder, which reads as an empty repo to anyone who did
+    not upload it. The card is the only place the Hub will show what is in
+    there without clicking through.
+    """
+    HfApi().upload_file(
+        path_or_fileobj=text.encode(),
+        path_in_repo="README.md",
+        repo_id=repo_id,
+        repo_type="model",
+        commit_message="Update model card",
+    )
 
 
 @click.command()

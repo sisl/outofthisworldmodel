@@ -63,6 +63,10 @@ smoke:
 eval CKPT *ARGS:
     uv run python -m owm.baselines.rl.evaluate eval.checkpoint={{CKPT}} {{ARGS}}
 
+# Rank a finished run's checkpoints on its wandb history, keep and publish the best
+promote RUN_DIR *ARGS:
+    uv run python -m owm.baselines.rl.promote {{RUN_DIR}} {{ARGS}}
+
 # Create a wandb sweep from sweeps/<SWEEP>.yaml; prints the sweep id
 sweep-init SWEEP:
     uv run wandb sweep --entity "$WANDB_ENTITY" --project "$WANDB_PROJECT" \
