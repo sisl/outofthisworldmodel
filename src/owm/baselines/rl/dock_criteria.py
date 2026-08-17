@@ -19,6 +19,13 @@ stricter one, so it is satisfied at or before the step the armed gate fires,
 and up to that instant the trajectory is the one a loose-gate env would have
 flown. One rollout with the env's own gate armed therefore scores every
 looser definition exactly, rather than approximately.
+
+LOOSER is the whole condition. The criteria below only ever DROP bounds, so
+position is the one axis a definition can tighten along, and a tolerance
+inside `dock.max_distance_m` is one the armed gate ends the approach before
+reaching -- unobservable from such a rollout, and reported as a failure that
+is an artifact of the gate. `eval_matrix.require_observable` refuses that
+matrix rather than scoring it.
 """
 
 from __future__ import annotations

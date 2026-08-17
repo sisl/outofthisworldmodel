@@ -165,6 +165,32 @@ def for_port(base: dict, port: str) -> dict:
     return {**base, "dock": {**base["dock"], "ports": [pinned if pinned is not None else port]}}
 
 
+def require_observable(task, tolerances_m: list[float]) -> None:
+    """Refuse a tolerance the armed gate would end the episode before reaching.
+
+    Scoring one rollout against many definitions is exact only for definitions
+    the armed gate cannot hide. Every criteria here DROPS bounds rather than
+    tightening them, so position is the only axis that can tighten, and a
+    tolerance below `dock.max_distance_m` is exactly the case where the
+    environment terminates the approach before the definition could have been
+    satisfied -- reporting a failure that says nothing about the policy. A
+    disabled gate ends nothing, so every tolerance is observable under it.
+    """
+    if not task.dock.enabled:
+        return
+    unobservable = sorted(t for t in tolerances_m if t < task.dock.max_distance_m)
+    if unobservable:
+        raise SystemExit(
+            f"eval_matrix.tolerances_m {unobservable} are tighter than this "
+            f"environment's own dock gate ({task.dock.max_distance_m} m), which "
+            "ends the episode on contact with it. A rollout the gate stops can "
+            "say nothing about a tolerance inside it, so those cells would "
+            "report failures that are an artifact of the gate rather than a "
+            "fact about the policy. Widen the tolerances, or evaluate against a "
+            "config whose dock.max_distance_m is at least as tight."
+        )
+
+
 def goal_error_of(info: dict) -> dict[str, float] | None:
     error = info.get("goal_error_true")
     if error is None:
@@ -204,14 +230,20 @@ def rollout_port(
         collided = np.zeros(width, dtype=bool)
         docked = np.zeros(width, dtype=bool)
         escaped = np.zeros(width, dtype=bool)
-        live = np.ones(width, dtype=bool)
+        # Only the slots this batch actually asked for. A final partial batch
+        # leaves the rest of the pool running episodes nobody requested, and
+        # waiting on them would cost a whole extra horizon for nothing.
+        live = np.arange(width) < batch
         minima = [_fresh_minima() for _ in range(width)]
         finals: list[dict[str, float] | None] = [None] * width
         starts: list[float | None] = [None] * width
 
-        # The reset state is step 0 of the episode, and it is scored: on the
-        # 5 m definitions a start can already satisfy the gate, and reading
-        # only post-action states would report that as a failure to arrive.
+        # The reset state seeds the diagnostics -- where the episode began, and
+        # the running minima it is the first sample of -- but is deliberately
+        # NOT scored against any definition. The environment checks its dock
+        # gate in `step` and never in `reset`, so an episode that begins inside
+        # a loose tolerance and leaves it is not a dock at any tolerance, and
+        # scoring step 0 would invent a success no armed gate could produce.
         for index in range(width):
             error = goal_error_of(reset_infos[index]) if index < len(reset_infos) else None
             if error is None:
@@ -219,7 +251,6 @@ def rollout_port(
             starts[index] = error["pos_m"]
             minima[index] = dict(error)
             finals[index] = dict(error)
-            boards[index].update(0, error)
 
         step = 0
         while live.any() and step < step_cap:
@@ -451,6 +482,7 @@ def run_eval_matrix(cfg: DictConfig) -> dict:
         else list(DEFAULT_TOLERANCES_M)
     )
     matrix = definitions(task.dock, criteria, tolerances)
+    require_observable(task, tolerances)
 
     trained = [entry["name"] for entry in base["dock"]["ports"]]
     ports = (
@@ -463,11 +495,15 @@ def run_eval_matrix(cfg: DictConfig) -> dict:
     unknown = [name for name in ports if name not in PORT_NAMES]
     if unknown:
         raise SystemExit(f"unknown port(s) {unknown}; owm-envs knows {list(PORT_NAMES)}")
-    if int(settings.trials) < 1:
-        raise SystemExit(f"eval_matrix.trials must be >= 1, got {settings.trials}")
+    for name in ("trials", "n_envs", "action_repeat"):
+        if int(settings[name]) < 1:
+            raise SystemExit(f"eval_matrix.{name} must be >= 1, got {settings[name]}")
 
-    algo = str(OmegaConf.select(run_cfg, "rl.algo") or cfg.rl.algo)
-    obs_mode = str(OmegaConf.select(run_cfg, "rl.obs") or "vector")
+    # A run dir predating the saved hydra config still has its env record, and
+    # `base_env_conf` already reads that case; the policy's own settings then
+    # fall back to the composed config rather than crashing on a None lookup.
+    algo = str((run_cfg and OmegaConf.select(run_cfg, "rl.algo")) or cfg.rl.algo)
+    obs_mode = str((run_cfg and OmegaConf.select(run_cfg, "rl.obs")) or "vector")
     resnet = None
     if obs_mode == "vector_resnet":
         from owm.envs.resnet_obs import extractor_kwargs
@@ -489,10 +525,12 @@ def run_eval_matrix(cfg: DictConfig) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     trials = int(settings.trials)
-    width = max(1, min(int(settings.n_envs), trials))
+    # Never wider than the work: a pool larger than the trial count would spend
+    # a process per slot flying episodes nothing records.
+    width = min(int(settings.n_envs), trials)
     step_cap = int(task.max_steps) + 1
     records: list[EpisodeRecord] = []
-    for index, port in enumerate(ports):
+    for port in ports:
         venv = make_vec_env(
             for_port(base, port),
             n_envs=width,
@@ -504,9 +542,13 @@ def run_eval_matrix(cfg: DictConfig) -> dict:
             action_repeat=int(settings.action_repeat),
         )
         try:
-            # Ports are seeded apart so no two of them fly the same episode,
-            # and each port's trial n is the same episode whatever else is run.
-            port_seed = int(settings.seed) + index * 10_000
+            # Keyed on the port's place in owm-envs' own PORTS table, never on
+            # where it happens to sit in this request. Ports are seeded apart
+            # so no two fly the same episode, and reading one port's row means
+            # re-running that port alone -- which under a request-relative
+            # offset would draw a different 50 episodes and disagree with the
+            # table it was checking.
+            port_seed = int(settings.seed) + PORT_NAMES.index(port) * 10_000
             flown = rollout_port(
                 model, vecnorm, venv, port,
                 "train" if port in trained else "heldout",

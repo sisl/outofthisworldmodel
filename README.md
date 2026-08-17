@@ -111,6 +111,13 @@ satisfied at or before the armed gate fires, over a trajectory identical up to
 that instant. Re-running the environment per definition would cost eight times
 as much and produce the same numbers.
 
+Looser is the whole condition, and it is enforced rather than assumed: a
+tolerance tighter than the environment's own `dock.max_distance_m` is one the
+armed gate ends the approach before reaching, so the run is refused instead of
+reporting failures that are an artifact of the gate. Each port is seeded from
+its place in owm-envs' `PORTS` table, not from where it sits in the request, so
+re-running one port alone reproduces that port's row exactly.
+
 `collision_terminates` is false on these configs, so an episode can clip the
 hull on its way to a port that sits on it. Every episode carries
 `ever_collided` and every success rate is reported both raw and
