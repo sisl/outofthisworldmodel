@@ -39,7 +39,6 @@ One rollout per (port, trial) scores every definition, exactly -- see
 from __future__ import annotations
 
 import csv
-import hashlib
 import statistics
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -61,6 +60,7 @@ from owm.baselines.rl.dock_criteria import (
     definitions,
 )
 from owm.baselines.rl.evaluate import load_normalizer, resolve_checkpoint
+from owm.baselines.rl.results import FORMAT_VERSION, start_fingerprint
 from owm.baselines.rl.run_state import load_run_config
 from owm.baselines.rl.train import ALGOS
 from owm.envs.factory import (
@@ -190,27 +190,6 @@ def require_observable(task, tolerances_m: list[float]) -> None:
         )
 
 
-def start_fingerprint(info: dict) -> str:
-    """A digest of the episode's initial true state.
-
-    What makes a comparison across two result directories checkable. Config
-    equality is not enough on its own -- the point of the rate axis is that two
-    policies are compared at DIFFERENT `dt` and `max_steps`, and those runs are
-    still the same episodes because `reset` draws its dispersions from the seed
-    alone and never from the timing. That is a property of owm-envs rather than
-    of this file, so it is verified per episode instead of trusted.
-
-    Over the raw float64 state, which is exact: the same seed at 1 Hz and at
-    20 Hz produces a bit-identical start.
-    """
-    state = info.get("state")
-    if state is None:
-        return ""
-    return hashlib.sha256(
-        np.asarray(state, dtype=np.float64).tobytes()
-    ).hexdigest()[:16]
-
-
 def goal_error_of(info: dict) -> dict[str, float] | None:
     error = info.get("goal_error_true")
     if error is None:
@@ -258,7 +237,8 @@ def rollout_port(
         finals: list[dict[str, float] | None] = [None] * width
         starts: list[float | None] = [None] * width
         fingerprints: list[str] = [
-            start_fingerprint(reset_infos[index]) if index < len(reset_infos) else ""
+            start_fingerprint(reset_infos[index].get("state"))
+            if index < len(reset_infos) else ""
             for index in range(width)
         ]
 
@@ -615,6 +595,8 @@ def run_eval_matrix(cfg: DictConfig) -> dict:
     (out_dir / "report.md").write_text(text)
     OmegaConf.save(
         OmegaConf.create({
+            "format_version": FORMAT_VERSION,
+            "harness": "owm.baselines.rl.eval_matrix",
             "checkpoint": str(settings.checkpoint),
             "resolved_checkpoint": str(ckpt),
             "run_dir": str(run_dir),

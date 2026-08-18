@@ -177,6 +177,43 @@ refuses to report a difference unless those match episode for episode. What
 holds today is a property of owm-envs rather than of this repo, so it is
 checked rather than trusted.
 
+#### The result format is a contract
+
+`owm.baselines.rl.results` owns it, and neither the writer nor the reader owns
+it. A **second harness** — a world-model policy that loads differently, decides
+at its own rate and manages its own horizon — can produce these three files and
+be compared against an RL baseline without sharing a line of rollout code:
+
+| file | grain | fields a comparison reads |
+| --- | --- | --- |
+| `meta.yaml` | one document | `EPISODE_KEYS`, `CADENCE_KEYS`, `format_version`, `harness` |
+| `episodes.csv` | one row per episode | `EPISODE_FIELDS` |
+| `outcomes.csv` | one row per (episode, criteria, tolerance) | `OUTCOME_FIELDS` |
+
+Ten fields in total. Extra columns and extra meta keys are ignored, and
+`summary.csv` and `report.md` are conveniences nothing reads back. A second
+harness can also import `dock_criteria` directly and get the twenty-one
+definitions and their scoreboard for free — that module holds no env, no model
+and no config group.
+
+Three rules make results from two harnesses safe to difference:
+
+- **`start_fingerprint` is not optional.** It is `results.start_fingerprint`
+  over the episode's initial *true* state, and it is the only evidence that two
+  directories describe the same episodes. A comparison refuses to report a
+  difference without it, and refuses again if the digests disagree episode for
+  episode. Use the shared function rather than reimplementing the digest.
+- **`EPISODE_KEYS` must match**; `CADENCE_KEYS` may differ, and reporting a
+  difference across them is the point.
+- **The horizon must match.** `dt` and `max_steps` are each free to differ —
+  that *is* the rate axis — but their product is how long the policy had to
+  reach the port, and a policy given half the time is not a policy that did
+  worse. This is checked separately from the cadence, because nothing else
+  would catch it.
+
+`format_version` lets a reader refuse a directory written by a newer harness
+rather than interpret its columns hopefully.
+
 ### Evaluating a world-model policy, or any other
 
 Everything from the rollout outwards is already policy-agnostic. `dock_criteria`

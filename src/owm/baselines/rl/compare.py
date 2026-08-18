@@ -39,14 +39,15 @@ from pathlib import Path
 import click
 from omegaconf import OmegaConf
 
-# Settings that decide WHICH episodes were flown. Two runs disagreeing on any
-# of these were not scored on the same work and cannot be differenced.
-EPISODE_KEYS = ("seed", "ports", "trials", "criteria", "tolerances_m")
-
-# Settings that decide how those episodes were FLOWN. Differing here is the
-# point of a cross-rate comparison, so it is reported rather than refused --
-# unless --strict-rate asks for the equal-cadence reading.
-CADENCE_KEYS = ("rate_hz", "action_repeat", "dt", "max_steps")
+from owm.baselines.rl.results import (
+    CADENCE_KEYS,
+    EPISODE_KEYS,
+    EPISODES,
+    FORMAT_VERSION,
+    META,
+    OUTCOMES,
+    horizon_s,
+)
 
 
 @dataclass
@@ -71,16 +72,16 @@ class Results:
 
 
 def load(run_dir: Path) -> Results:
-    meta = OmegaConf.to_container(OmegaConf.load(run_dir / "meta.yaml"), resolve=True)
+    meta = OmegaConf.to_container(OmegaConf.load(run_dir / META), resolve=True)
     collided: dict[tuple[str, int], bool] = {}
     fingerprint: dict[tuple[str, int], str] = {}
-    with (run_dir / "episodes.csv").open() as handle:
+    with (run_dir / EPISODES).open() as handle:
         for row in csv.DictReader(handle):
             key = (row["port"], int(row["trial"]))
             collided[key] = row["ever_collided"] == "True"
             fingerprint[key] = row.get("start_fingerprint", "")
     fired: dict[tuple[str, int, str, float], bool] = {}
-    with (run_dir / "outcomes.csv").open() as handle:
+    with (run_dir / OUTCOMES).open() as handle:
         for row in csv.DictReader(handle):
             fired[
                 (row["port"], int(row["trial"]), row["criteria"], float(row["tolerance_m"]))
@@ -94,6 +95,29 @@ def require_pairable(a: Results, b: Results, strict_rate: bool) -> list[str]:
     Returns the cadence keys that differ, which the caller prints: a cross-rate
     comparison is legitimate and should say out loud that it is one.
     """
+    for run in (a, b):
+        version = int(run.meta.get("format_version", FORMAT_VERSION))
+        if version > FORMAT_VERSION:
+            raise SystemExit(
+                f"{run.path} is result format v{version}, newer than the "
+                f"v{FORMAT_VERSION} this build reads. Its columns may not mean what "
+                "they did here; upgrade rather than interpret them hopefully."
+            )
+
+    # The horizon is not a cadence field even though it is computed from two of
+    # them. dt and max_steps are each free to differ -- that IS the rate axis --
+    # but their product is how long the policy had to reach the port, and a
+    # policy given half the time is not a policy that did worse.
+    span_a, span_b = horizon_s(a.meta), horizon_s(b.meta)
+    if span_a is not None and span_b is not None and span_a != span_b:
+        raise SystemExit(
+            f"{a.path} gave each episode {span_a:g} s to succeed and {b.path} gave "
+            f"{span_b:g} s ({a.meta['dt']}x{a.meta['max_steps']} vs "
+            f"{b.meta['dt']}x{b.meta['max_steps']}). Differing dt and max_steps is "
+            "the point of a cross-rate comparison, but their product is the time "
+            "the task allowed, and a policy given less of it did not do worse."
+        )
+
     keys = EPISODE_KEYS + (CADENCE_KEYS if strict_rate else ())
     mismatched = [key for key in keys if a.meta.get(key) != b.meta.get(key)]
     if mismatched:
