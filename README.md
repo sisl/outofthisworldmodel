@@ -36,6 +36,8 @@ just train-sac [ARGS...]     # fresh SAC run   (owm.baselines.rl.train rl=sac)
 just resume RUN_DIR [ARGS...]  # resume a crashed/stopped run
 just smoke                   # tiny offline PPO run, no hub upload
 just eval CKPT [ARGS...]     # evaluate a checkpoint
+just eval-matrix CKPT [ARGS...]  # evaluate it per port, under every dock definition
+just promote RUN_DIR [ARGS...]   # keep and publish a run's best checkpoint
 just sweep-init SWEEP        # create a wandb sweep, print its id
 just sweep-agent ID SWEEP    # run one sweep agent (see Sweeps below)
 just test                    # pytest, network tests deselected
@@ -77,6 +79,164 @@ as-run config instead of the committed inline config, add
 follows whatever horizon the data carries. Note: the `-trial` dataset
 predates the 360 s horizon change (`max_steps` 12000 vs the current 7200),
 so evaluating against it needs a matching env override.
+
+## Evaluating a policy
+
+`just eval` answers one question — mean return and success rate over N
+episodes, port drawn at random. `just eval-matrix` answers the ones a run that
+rarely docks is actually being asked: which port it can reach, and how close
+it got when it missed.
+
+```bash
+just eval-matrix runs/best/ppo_70M_near/final_model.zip
+just eval-matrix runs/best/ppo_70M_near/final_model.zip \
+    eval_matrix.rate_hz=20 eval_matrix.action_repeat=20
+```
+
+It flies `eval_matrix.trials` deterministic episodes per port, with
+`dock.ports` narrowed to **one port at a time** so that count is exact rather
+than an expectation, over all eight ports owm-envs knows. Five of them are the
+`iss_numerical_ports` train split; the other three the policy never saw, and
+every result carries a `train`/`heldout` tag.
+
+Each episode is scored under twelve success definitions — three criteria
+(`position`, `position_velocity`, `full`) across four position tolerances
+(0.1, 1, 2, 5 m), so `full` at 0.1 m is the environment's own dock gate and
+the rest relax it by dropping tests or widening the position bound.
+
+One rollout per (port, trial) scores all twelve **exactly**. The gates reach an
+episode only through termination — observation, dynamics and a deterministic
+policy are the same whatever bounds are configured — and a looser definition is
+satisfied at or before the armed gate fires, over a trajectory identical up to
+that instant. Re-running the environment per definition would cost eight times
+as much and produce the same numbers.
+
+Looser is the whole condition, and it is enforced rather than assumed: a
+tolerance tighter than the environment's own `dock.max_distance_m` is one the
+armed gate ends the approach before reaching, so the run is refused instead of
+reporting failures that are an artifact of the gate. Each port is seeded from
+its place in owm-envs' `PORTS` table, not from where it sits in the request, so
+re-running one port alone reproduces that port's row exactly.
+
+`collision_terminates` is false on these configs, so an episode can clip the
+hull on its way to a port that sits on it. Every episode carries
+`ever_collided` and every success rate is reported both raw and
+collision-voided.
+
+The environment is the run's own `env_config.yaml`, found beside the
+checkpoint (name it with `eval_matrix.run_dir=` for a checkpoint fetched from
+the hub). `eval_matrix.rate_hz` re-times `dt` and `max_steps` together, holding
+the horizon in seconds — it exists because world-model policies will run at
+20 Hz. `eval_matrix.action_repeat` is independent: a 1 Hz-trained policy at
+`rate_hz=20 action_repeat=20` flies its trained cadence over finer
+integration, while `action_repeat=1` asks it for twenty times the decisions.
+Both default to the run's own rate and one decision per step.
+
+Results land in `runs/evals/<run>_<timestamp>/`: `episodes.csv` (one row per
+episode), `outcomes.csv` (one row per episode × criteria × tolerance),
+`summary.csv` (one row per port × criteria × tolerance), `report.md` and
+`meta.yaml`. Long form rather than one wide table, so a plot or a table is a
+filter rather than a reshape.
+
+### Evaluating a world-model policy, or any other
+
+Everything from the rollout outwards is already policy-agnostic. `dock_criteria`
+reads `info["goal_error_true"]` and nothing else, and the scoring, the CSVs and
+the report never learn what produced an action. What is SB3-specific is exactly
+three lines in `eval_matrix.run_eval_matrix`:
+
+```python
+model   = ALGOS[algo].load(ckpt, device="cpu")     # SB3 PPO/SAC loader
+vecnorm = load_normalizer(ckpt, ...)               # VecNormalize pickle sibling
+...
+actions, _ = model.predict(norm, deterministic=True)   # in rollout_port
+```
+
+To add a second policy family, give it a loader returning any object with a
+`predict(obs, deterministic=...) -> (actions, state)` and select on something
+recorded in the run — `rl.algo` today, a `policy.kind` key for a world model —
+rather than widening `ALGOS`, which is training's table and means "which SB3
+class trains this".
+
+**One genuine gap to close first.** SB3's `MlpPolicy` is stateless, so
+`rollout_port` never resets the policy between episodes. A world-model policy
+carries recurrent latent state, and a vec env auto-resets a finished slot, so
+that slot's next episode would begin with the previous one's latent unless the
+loop clears it. The place to do that is where `live &= ~dones` already runs: the
+`dones` mask is exactly the set of slots whose state must be dropped. Until a
+stateful policy exists there is nothing to reset, which is why the hook is
+described here rather than written.
+
+**What makes two runs comparable.** Hold `seed`, `ports`, `trials`, `rate_hz`
+and the environment record fixed; `meta.yaml` records all five, so two result
+directories can be checked for agreement before their `summary.csv` files are
+put side by side. Ports are seeded from owm-envs' `PORTS` table rather than
+from the request, so two policies evaluated on the same seed fly *the same
+episodes* — the comparison is paired, and a per-port difference is a difference
+between policies rather than between draws.
+
+**Rate is the trap.** A world-model policy running at 20 Hz and an RL baseline
+trained at 1 Hz do not compare at one setting, they compare at two, and the
+honest report gives both. `rate_hz=20 action_repeat=20` flies the 1 Hz policy at
+its trained cadence over the same integration as the world model — equal
+decisions, so the comparison isolates the policy. `rate_hz=20 action_repeat=1`
+gives both policies the same 20 Hz control authority — equal authority, so it
+measures what each is worth at the rate the system will actually run. The first
+flatters the baseline, the second flatters whichever policy was trained at
+20 Hz; neither is the comparison on its own.
+
+## Promoting a run's best checkpoint
+
+A finished run's best policy is not its last one — PPO's entropy collapses
+partway through a long run, and everything after that point is worse than what
+came before.
+
+```bash
+just promote runs/ppo_70M_near                      # ranks, keeps, publishes
+just promote runs/ppo_70M_near --criterion min_pos --no-upload
+```
+
+Ranking reads the run's own wandb history rather than flying fresh rollouts,
+scoring every checkpoint (and the finals) over the window of history centred
+on its own step — half the run's checkpoint spacing by default:
+
+| criterion | series | direction |
+| --- | --- | --- |
+| `val_return` | `val/mean_return` | maximize (default) |
+| `train_return` | `rollout/ep_rew_mean` | maximize |
+| `min_pos` | `docking/ep_min_pos_m` | minimize |
+
+All three are printed for every candidate, because they disagree and that
+disagreement is informative: return is dominated by shaping cost on a run that
+never docks, while closest approach reads only whether the policy closed.
+
+The winner is copied to `runs/best/<name>/` as `final_model.zip` and
+`vecnormalize.pkl`, beside the run's `config.yaml`, `env_config.yaml` and a
+`promotion.yaml` recording where it came from. Under the finals' names
+deliberately: `vecnormalize_name_for` recognises only `final_model.zip` and
+`model_<N>_steps.zip`, so a file named for its step and score would lose its
+statistics sibling and be refused by every entry point that loads it. Upload
+goes to `rl/best/<name>/` on the Hub, clear of the run's own `rl/<run_dir>/`.
+
+`--name` is the published identity and defaults to the run directory's, which
+is a working name: `ppo_70M_near` says how long a run was and which shell it
+flew, and nothing about the environment, observation mode or goal setup that
+produced the policy. A checkpoint outlives the directory it came out of, so
+name it for what it is —
+
+```bash
+just promote runs/ppo_70M_near --name owm-iss-numerical-v1-coop-ppo-vector \
+    --repo-id sislaboratory/owm-rl-baselines
+```
+
+Every upload rebuilds the repo's root `README.md`, which is what the Hub renders
+as its model card — a repo whose files all sit under a path prefix otherwise
+shows an empty card and a root listing of one folder, which reads as an empty
+repo to anyone who did not upload it. The card is rebuilt from the
+`promotion.yaml` records already in the repo rather than from an index kept
+beside them, so it cannot fall out of step with what is actually published, and
+each record carries the algorithm, observation mode, environment and horizon
+that produced its checkpoint.
 
 ## Sweeps
 

@@ -193,6 +193,53 @@ def require_renderable(env_name: str) -> None:
         )
 
 
+RENDER_ADAPTER_INDEX_VAR = "OWM_RENDER_ADAPTER_INDEX"
+
+
+def select_render_adapter() -> None:
+    """Pin the render adapter by index, for hosts with identical cards.
+
+    PYGFX_WGPU_ADAPTER_NAME matches a substring of an adapter's summary and
+    takes the first hit, so on a machine with two of the same card it selects
+    the MODEL and always lands on the lower-numbered slot. When that slot is
+    busy -- another tenant's job, or simply full -- there is no name that
+    reaches the free one: the two adapters are byte-identical in both summary
+    and info.
+
+    `OWM_RENDER_ADAPTER_INDEX` names the slot instead, as an index into
+    `wgpu.gpu.enumerate_adapters_sync()` (list them with `just adapters`).
+    Unset, nothing here runs and adapter choice is pygfx's as before.
+
+    Called per process, because pygfx keeps the selection on a module global
+    and every subproc worker builds its own renderer. It must run before that
+    renderer exists, which is why it sits here rather than at first render.
+    """
+    raw = os.environ.get(RENDER_ADAPTER_INDEX_VAR)
+    if not raw:
+        return
+    # Imported here, not at module scope: pygfx and wgpu are the render extra,
+    # and a vector-observation run must not need them installed.
+    import pygfx.renderers.wgpu as gfx_wgpu
+    import wgpu
+
+    adapters = wgpu.gpu.enumerate_adapters_sync()
+    try:
+        index = int(raw)
+        adapter = adapters[index]
+    except (ValueError, IndexError):
+        summaries = "\n".join(f"  {i}: {a.summary}" for i, a in enumerate(adapters))
+        raise SystemExit(
+            f"{RENDER_ADAPTER_INDEX_VAR}={raw!r} is not an index into this "
+            f"host's {len(adapters)} render adapters:\n{summaries}"
+        ) from None
+    try:
+        gfx_wgpu.select_adapter(adapter)
+    except RuntimeError:
+        # Already selected in this process -- pygfx refuses once a renderer
+        # exists, and a second env in the same process is not an error.
+        pass
+
+
 def make_env(
     cfg: BaseTaskConfig,
     seed: int,
@@ -211,6 +258,7 @@ def make_env(
     needs_frames = render or obs_mode == "vector_resnet"
     if needs_frames:
         require_renderable(spec.name)
+        select_render_adapter()
     env = env_class(spec.name)(cfg, render_mode="rgb_array" if needs_frames else None)
     if obs_mode == "vector_resnet":
         from owm.envs.resnet_obs import ResnetObservationWrapper

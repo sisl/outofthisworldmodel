@@ -35,3 +35,26 @@ eval:
   deterministic: true
   video_path: null       # write an mp4 of the first episode here (needs render extra)
   allow_unnormalized: false  # evaluate on raw obs when no VecNormalize stats exist
+
+# Per-port evaluation under every success definition (owm.baselines.rl.eval_matrix).
+# The environment is the run's own env_config.yaml, not this file's
+# `environments` group: a policy is scored on what it trained on.
+eval_matrix:
+  checkpoint: null       # local path or hf:<org>/<repo>/<path/in/repo.zip>
+  run_dir: null          # env_config.yaml source; found beside the checkpoint by default
+  ports: all             # every port owm-envs knows, or an explicit list of names
+  trials: 50             # episodes per port
+  seed: 100000           # base seed, disjoint from training's and val's
+  # null keeps the run's own dt. A number re-times dt and max_steps together,
+  # holding the horizon in seconds -- 20 flies the same 360 s at 20 Hz.
+  rate_hz: null
+  # Decisions are held for this many env steps. Independent of rate_hz: pair
+  # rate_hz=20 with action_repeat=20 to fly a 1 Hz policy at its trained
+  # cadence over finer integration, or with 1 to ask it for 20x the decisions.
+  action_repeat: 1
+  criteria: [position, position_velocity, full]
+  tolerances_m: [0.1, 1.0, 2.0, 5.0]
+  n_envs: 10
+  vec: subproc
+  out_dir: null          # defaults to runs/evals/<run>_<timestamp>
+  allow_unnormalized: false
