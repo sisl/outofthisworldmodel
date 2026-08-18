@@ -53,7 +53,9 @@ eval_matrix:
   # cadence over finer integration, or with 1 to ask it for 20x the decisions.
   action_repeat: 1
   criteria: [position, position_velocity, full]
-  tolerances_m: [0.1, 1.0, 2.0, 5.0]
+  # Scoring is online during the rollout, so every extra tolerance is
+  # free: one rollout answers all of them. Spend that on resolution.
+  tolerances_m: [0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0]
   n_envs: 10
   vec: subproc
   out_dir: null          # defaults to runs/evals/<run>_<timestamp>

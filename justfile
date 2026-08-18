@@ -72,6 +72,10 @@ eval-matrix CKPT *ARGS:
 promote RUN_DIR *ARGS:
     uv run python -m owm.baselines.rl.promote {{RUN_DIR}} {{ARGS}}
 
+# Difference two eval-matrix result dirs, episode by episode
+compare RUN_A RUN_B *ARGS:
+    uv run python -m owm.baselines.rl.compare {{RUN_A}} {{RUN_B}} {{ARGS}}
+
 # Create a wandb sweep from sweeps/<SWEEP>.yaml; prints the sweep id
 sweep-init SWEEP:
     uv run wandb sweep --entity "$WANDB_ENTITY" --project "$WANDB_PROJECT" \

@@ -37,6 +37,7 @@ just resume RUN_DIR [ARGS...]  # resume a crashed/stopped run
 just smoke                   # tiny offline PPO run, no hub upload
 just eval CKPT [ARGS...]     # evaluate a checkpoint
 just eval-matrix CKPT [ARGS...]  # evaluate it per port, under every dock definition
+just compare A B [ARGS...]       # difference two eval-matrix result dirs
 just promote RUN_DIR [ARGS...]   # keep and publish a run's best checkpoint
 just sweep-init SWEEP        # create a wandb sweep, print its id
 just sweep-agent ID SWEEP    # run one sweep agent (see Sweeps below)
@@ -99,17 +100,20 @@ than an expectation, over all eight ports owm-envs knows. Five of them are the
 `iss_numerical_ports` train split; the other three the policy never saw, and
 every result carries a `train`/`heldout` tag.
 
-Each episode is scored under twelve success definitions — three criteria
-(`position`, `position_velocity`, `full`) across four position tolerances
-(0.1, 1, 2, 5 m), so `full` at 0.1 m is the environment's own dock gate and
-the rest relax it by dropping tests or widening the position bound.
+Each episode is scored under twenty-one success definitions — three criteria
+(`position`, `position_velocity`, `full`) across seven position tolerances
+(0.1, 0.2, 0.5, 1, 2, 5, 10 m), so `full` at 0.1 m is the environment's own
+dock gate and the rest relax it by dropping tests or widening the position
+bound. The ladder is dense because it costs nothing: scoring happens online
+during the rollout, so a tolerance is a comparison against a number already in
+hand, not another episode to fly.
 
-One rollout per (port, trial) scores all twelve **exactly**. The gates reach an
+One rollout per (port, trial) scores all twenty-one **exactly**. The gates reach an
 episode only through termination — observation, dynamics and a deterministic
 policy are the same whatever bounds are configured — and a looser definition is
 satisfied at or before the armed gate fires, over a trajectory identical up to
-that instant. Re-running the environment per definition would cost eight times
-as much and produce the same numbers.
+that instant. Re-running the environment per definition would cost twenty-one
+times as much and produce the same numbers.
 
 Looser is the whole condition, and it is enforced rather than assumed: a
 tolerance tighter than the environment's own `dock.max_distance_m` is one the
@@ -137,6 +141,41 @@ episode), `outcomes.csv` (one row per episode × criteria × tolerance),
 `summary.csv` (one row per port × criteria × tolerance), `report.md` and
 `meta.yaml`. Long form rather than one wide table, so a plot or a table is a
 filter rather than a reshape.
+
+### Comparing two policies
+
+```bash
+just eval-matrix runs/best/<a>/final_model.zip eval_matrix.out_dir=runs/evals/a
+just eval-matrix runs/best/<b>/final_model.zip eval_matrix.out_dir=runs/evals/b
+just compare runs/evals/a runs/evals/b --criteria position --tolerance 5
+```
+
+The comparison is **paired**. Ports are seeded from their place in owm-envs'
+`PORTS` table, so run A's trial 7 on `pirs_nadir` and run B's trial 7 on
+`pirs_nadir` are the same seed, the same initial state and the same target —
+one episode flown by two policies, not two samples of a population.
+
+That is what makes 50 trials a port enough to say anything. Two independent
+proportions of 50 carry a standard error near 0.07 each, so a 0.10 gap between
+them is noise. The paired form discards every episode the two policies agreed
+on and tests only the disagreements (an exact McNemar test), which is where the
+information about a difference actually lives. `p(Holm)` corrects across the
+cells of each table, since a dozen uncorrected cells turn up a "significant"
+one about once per comparison by construction.
+
+**Across rates.** A world-model policy at 20 Hz with `action_repeat=1` and an
+RL baseline at 1 Hz with `action_repeat=1` differ in `dt` and `max_steps` by
+twenty, and are still *the same episodes*: `reset` draws its dispersions, its
+port and its epoch offset from the seed alone and never from the timing, so the
+same seed produces a bit-identical start at either rate. `just compare` allows
+the timing fields to differ and says so in its header; `--strict-rate` refuses
+them for the equal-cadence reading instead.
+
+Allowed to differ is not assumed to be harmless. Every episode records a
+`start_fingerprint` — a digest of its initial true state — and `compare`
+refuses to report a difference unless those match episode for episode. What
+holds today is a property of owm-envs rather than of this repo, so it is
+checked rather than trusted.
 
 ### Evaluating a world-model policy, or any other
 

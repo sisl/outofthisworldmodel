@@ -39,6 +39,7 @@ One rollout per (port, trial) scores every definition, exactly -- see
 from __future__ import annotations
 
 import csv
+import hashlib
 import statistics
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -91,6 +92,9 @@ class EpisodeRecord:
     ever_collided: bool
     escaped: bool
     start_pos_m: float
+    # Identifies the episode's initial condition, so two result directories can
+    # be shown to have flown the same episodes rather than assumed to have.
+    start_fingerprint: str
     final: dict[str, float]
     minimum: dict[str, float]
     board: DockScoreboard
@@ -186,6 +190,27 @@ def require_observable(task, tolerances_m: list[float]) -> None:
         )
 
 
+def start_fingerprint(info: dict) -> str:
+    """A digest of the episode's initial true state.
+
+    What makes a comparison across two result directories checkable. Config
+    equality is not enough on its own -- the point of the rate axis is that two
+    policies are compared at DIFFERENT `dt` and `max_steps`, and those runs are
+    still the same episodes because `reset` draws its dispersions from the seed
+    alone and never from the timing. That is a property of owm-envs rather than
+    of this file, so it is verified per episode instead of trusted.
+
+    Over the raw float64 state, which is exact: the same seed at 1 Hz and at
+    20 Hz produces a bit-identical start.
+    """
+    state = info.get("state")
+    if state is None:
+        return ""
+    return hashlib.sha256(
+        np.asarray(state, dtype=np.float64).tobytes()
+    ).hexdigest()[:16]
+
+
 def goal_error_of(info: dict) -> dict[str, float] | None:
     error = info.get("goal_error_true")
     if error is None:
@@ -232,6 +257,10 @@ def rollout_port(
         minima = [_fresh_minima() for _ in range(width)]
         finals: list[dict[str, float] | None] = [None] * width
         starts: list[float | None] = [None] * width
+        fingerprints: list[str] = [
+            start_fingerprint(reset_infos[index]) if index < len(reset_infos) else ""
+            for index in range(width)
+        ]
 
         # The reset state seeds the diagnostics -- where the episode began, and
         # the running minima it is the first sample of -- but is deliberately
@@ -297,6 +326,7 @@ def rollout_port(
                     ever_collided=bool(collided[index]),
                     escaped=bool(escaped[index]),
                     start_pos_m=float(starts[index]) if starts[index] is not None else float("nan"),
+                    start_fingerprint=fingerprints[index],
                     final=finals[index] or _fresh_minima(),
                     minimum=minima[index],
                     board=boards[index],
@@ -343,7 +373,7 @@ def summarize(
 def write_csvs(out_dir: Path, records: list[EpisodeRecord], summary: list[dict[str, object]]) -> None:
     episode_fields = [
         "port", "split", "trial", "seed", "steps", "outcome", "ep_return",
-        "env_docked", "ever_collided", "escaped", "start_pos_m",
+        "env_docked", "ever_collided", "escaped", "start_pos_m", "start_fingerprint",
         *(f"final_{key}" for key in GOAL_ERROR_NORM_LABELS),
         *(f"min_{key}" for key in GOAL_ERROR_NORM_LABELS),
     ]
@@ -357,6 +387,7 @@ def write_csvs(out_dir: Path, records: list[EpisodeRecord], summary: list[dict[s
                 "ep_return": record.ep_return, "env_docked": record.env_docked,
                 "ever_collided": record.ever_collided, "escaped": record.escaped,
                 "start_pos_m": record.start_pos_m,
+                "start_fingerprint": record.start_fingerprint,
                 **{f"final_{key}": record.final[key] for key in GOAL_ERROR_NORM_LABELS},
                 **{f"min_{key}": record.minimum[key] for key in GOAL_ERROR_NORM_LABELS},
             })
