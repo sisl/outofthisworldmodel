@@ -60,6 +60,7 @@ from owm.baselines.rl.dock_criteria import (
     definitions,
 )
 from owm.baselines.rl.evaluate import load_normalizer, resolve_checkpoint
+from owm.baselines.rl.results import FORMAT_VERSION, start_fingerprint
 from owm.baselines.rl.run_state import load_run_config
 from owm.baselines.rl.train import ALGOS
 from owm.envs.factory import (
@@ -91,6 +92,9 @@ class EpisodeRecord:
     ever_collided: bool
     escaped: bool
     start_pos_m: float
+    # Identifies the episode's initial condition, so two result directories can
+    # be shown to have flown the same episodes rather than assumed to have.
+    start_fingerprint: str
     final: dict[str, float]
     minimum: dict[str, float]
     board: DockScoreboard
@@ -232,6 +236,11 @@ def rollout_port(
         minima = [_fresh_minima() for _ in range(width)]
         finals: list[dict[str, float] | None] = [None] * width
         starts: list[float | None] = [None] * width
+        fingerprints: list[str] = [
+            start_fingerprint(reset_infos[index].get("state"))
+            if index < len(reset_infos) else ""
+            for index in range(width)
+        ]
 
         # The reset state seeds the diagnostics -- where the episode began, and
         # the running minima it is the first sample of -- but is deliberately
@@ -297,6 +306,7 @@ def rollout_port(
                     ever_collided=bool(collided[index]),
                     escaped=bool(escaped[index]),
                     start_pos_m=float(starts[index]) if starts[index] is not None else float("nan"),
+                    start_fingerprint=fingerprints[index],
                     final=finals[index] or _fresh_minima(),
                     minimum=minima[index],
                     board=boards[index],
@@ -343,7 +353,7 @@ def summarize(
 def write_csvs(out_dir: Path, records: list[EpisodeRecord], summary: list[dict[str, object]]) -> None:
     episode_fields = [
         "port", "split", "trial", "seed", "steps", "outcome", "ep_return",
-        "env_docked", "ever_collided", "escaped", "start_pos_m",
+        "env_docked", "ever_collided", "escaped", "start_pos_m", "start_fingerprint",
         *(f"final_{key}" for key in GOAL_ERROR_NORM_LABELS),
         *(f"min_{key}" for key in GOAL_ERROR_NORM_LABELS),
     ]
@@ -357,6 +367,7 @@ def write_csvs(out_dir: Path, records: list[EpisodeRecord], summary: list[dict[s
                 "ep_return": record.ep_return, "env_docked": record.env_docked,
                 "ever_collided": record.ever_collided, "escaped": record.escaped,
                 "start_pos_m": record.start_pos_m,
+                "start_fingerprint": record.start_fingerprint,
                 **{f"final_{key}": record.final[key] for key in GOAL_ERROR_NORM_LABELS},
                 **{f"min_{key}": record.minimum[key] for key in GOAL_ERROR_NORM_LABELS},
             })
@@ -584,6 +595,8 @@ def run_eval_matrix(cfg: DictConfig) -> dict:
     (out_dir / "report.md").write_text(text)
     OmegaConf.save(
         OmegaConf.create({
+            "format_version": FORMAT_VERSION,
+            "harness": "owm.baselines.rl.eval_matrix",
             "checkpoint": str(settings.checkpoint),
             "resolved_checkpoint": str(ckpt),
             "run_dir": str(run_dir),

@@ -41,7 +41,7 @@ from owm_envs.envs.common.goal import GOAL_ERROR_NORM_LABELS
 # definition; the other two relax it by dropping tests, not by widening them.
 CRITERIA: tuple[str, ...] = ("position", "position_velocity", "full")
 
-DEFAULT_TOLERANCES_M: tuple[float, ...] = (0.1, 1.0, 2.0, 5.0)
+DEFAULT_TOLERANCES_M: tuple[float, ...] = (0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0)
 
 
 @dataclass(frozen=True)

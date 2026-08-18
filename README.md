@@ -37,6 +37,7 @@ just resume RUN_DIR [ARGS...]  # resume a crashed/stopped run
 just smoke                   # tiny offline PPO run, no hub upload
 just eval CKPT [ARGS...]     # evaluate a checkpoint
 just eval-matrix CKPT [ARGS...]  # evaluate it per port, under every dock definition
+just compare A B [ARGS...]       # difference two eval-matrix result dirs
 just promote RUN_DIR [ARGS...]   # keep and publish a run's best checkpoint
 just sweep-init SWEEP        # create a wandb sweep, print its id
 just sweep-agent ID SWEEP    # run one sweep agent (see Sweeps below)
@@ -99,17 +100,20 @@ than an expectation, over all eight ports owm-envs knows. Five of them are the
 `iss_numerical_ports` train split; the other three the policy never saw, and
 every result carries a `train`/`heldout` tag.
 
-Each episode is scored under twelve success definitions — three criteria
-(`position`, `position_velocity`, `full`) across four position tolerances
-(0.1, 1, 2, 5 m), so `full` at 0.1 m is the environment's own dock gate and
-the rest relax it by dropping tests or widening the position bound.
+Each episode is scored under twenty-one success definitions — three criteria
+(`position`, `position_velocity`, `full`) across seven position tolerances
+(0.1, 0.2, 0.5, 1, 2, 5, 10 m), so `full` at 0.1 m is the environment's own
+dock gate and the rest relax it by dropping tests or widening the position
+bound. The ladder is dense because it costs nothing: scoring happens online
+during the rollout, so a tolerance is a comparison against a number already in
+hand, not another episode to fly.
 
-One rollout per (port, trial) scores all twelve **exactly**. The gates reach an
+One rollout per (port, trial) scores all twenty-one **exactly**. The gates reach an
 episode only through termination — observation, dynamics and a deterministic
 policy are the same whatever bounds are configured — and a looser definition is
 satisfied at or before the armed gate fires, over a trajectory identical up to
-that instant. Re-running the environment per definition would cost eight times
-as much and produce the same numbers.
+that instant. Re-running the environment per definition would cost twenty-one
+times as much and produce the same numbers.
 
 Looser is the whole condition, and it is enforced rather than assumed: a
 tolerance tighter than the environment's own `dock.max_distance_m` is one the
@@ -137,6 +141,94 @@ episode), `outcomes.csv` (one row per episode × criteria × tolerance),
 `summary.csv` (one row per port × criteria × tolerance), `report.md` and
 `meta.yaml`. Long form rather than one wide table, so a plot or a table is a
 filter rather than a reshape.
+
+### Comparing two policies
+
+```bash
+just eval-matrix runs/best/<a>/final_model.zip eval_matrix.out_dir=runs/evals/a
+just eval-matrix runs/best/<b>/final_model.zip eval_matrix.out_dir=runs/evals/b
+just compare runs/evals/a runs/evals/b --criteria position --tolerance 5
+```
+
+The comparison is **paired**. Ports are seeded from their place in owm-envs'
+`PORTS` table, so run A's trial 7 on `pirs_nadir` and run B's trial 7 on
+`pirs_nadir` are the same seed, the same initial state and the same target —
+one episode flown by two policies, not two samples of a population.
+
+That is what makes 50 trials a port enough to say anything. Two independent
+proportions of 50 carry a standard error near 0.07 each, so a 0.10 gap between
+them is noise. The paired form discards every episode the two policies agreed
+on and tests only the disagreements (an exact McNemar test), which is where the
+information about a difference actually lives. `p(Holm)` corrects across the
+cells of each table, since a dozen uncorrected cells turn up a "significant"
+one about once per comparison by construction.
+
+**Across rates.** A world-model policy at 20 Hz with `action_repeat=1` and an
+RL baseline at 1 Hz with `action_repeat=1` differ in `dt` and `max_steps` by
+twenty, and are still *the same episodes*: `reset` draws its dispersions, its
+port and its epoch offset from the seed alone and never from the timing, so the
+same seed produces a bit-identical start at either rate. `just compare` allows
+the timing fields to differ and says so in its header; `--strict-rate` refuses
+them for the equal-cadence reading instead.
+
+Allowed to differ is not assumed to be harmless. Every episode records a
+`start_fingerprint` — a digest of its initial true state — and `compare`
+refuses to report a difference unless those match episode for episode. What
+holds today is a property of owm-envs rather than of this repo, so it is
+checked rather than trusted.
+
+#### The result format is a contract
+
+`owm.baselines.rl.results` owns it, and neither the writer nor the reader owns
+it. A **second harness** — a world-model policy that loads differently, decides
+at its own rate and manages its own horizon — can produce these three files and
+be compared against an RL baseline without sharing a line of rollout code:
+
+| file | grain | fields a comparison reads |
+| --- | --- | --- |
+| `meta.yaml` | one document | `EPISODE_KEYS`, `CADENCE_KEYS`, `format_version`, `harness` |
+| `episodes.csv` | one row per episode | `EPISODE_FIELDS` |
+| `outcomes.csv` | one row per (episode, criteria, tolerance) | `OUTCOME_FIELDS` |
+
+Ten fields in total. Extra columns and extra meta keys are ignored, and
+`summary.csv` and `report.md` are conveniences nothing reads back. A second
+harness can also import `dock_criteria` directly and get the twenty-one
+definitions and their scoreboard for free — that module holds no env, no model
+and no config group.
+
+Three rules make results from two harnesses safe to difference:
+
+- **`start_fingerprint` is not optional.** It is `results.start_fingerprint`
+  over the episode's initial *true* state, and it is the only evidence that two
+  directories describe the same episodes. A comparison refuses to report a
+  difference without it, and refuses again if the digests disagree episode for
+  episode. Use the shared function rather than reimplementing the digest.
+- **`EPISODE_KEYS` must match**; `CADENCE_KEYS` may differ, and reporting a
+  difference across them is the point.
+- **The horizon must match.** `dt` and `max_steps` are each free to differ —
+  that *is* the rate axis — but their product is how long the policy had to
+  reach the port, and a policy given half the time is not a policy that did
+  worse. This is checked separately from the cadence, because nothing else
+  would catch it.
+
+`format_version` lets a reader refuse a directory written by a newer harness
+rather than interpret its columns hopefully.
+
+**One caveat a stateful policy must handle.** `eval_matrix.rollout_port` never
+resets the policy between episodes. SB3's `MlpPolicy` is stateless so there is
+nothing to reset today, but a vec env auto-resets a finished slot mid-loop —
+so a policy carrying recurrent state would begin that slot's next episode with
+the previous episode's latent still in it. Nothing in the result format catches
+that: the fingerprints would still match, because the *environment* restarted
+correctly and only the policy did not, and the comparison would report a real
+difference between a policy and a contaminated version of itself.
+
+A harness reusing this rollout loop has to clear that state where
+`live &= ~dones` already runs — the `dones` mask is exactly the set of slots to
+clear. A harness writing its own loop has to do the same thing in its own. It
+is described here rather than implemented because there is no stateful policy
+to test it against yet, and it must be right before a recurrent policy's
+numbers mean anything.
 
 ### Evaluating a world-model policy, or any other
 
