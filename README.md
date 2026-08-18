@@ -214,6 +214,22 @@ Three rules make results from two harnesses safe to difference:
 `format_version` lets a reader refuse a directory written by a newer harness
 rather than interpret its columns hopefully.
 
+**One caveat a stateful policy must handle.** `eval_matrix.rollout_port` never
+resets the policy between episodes. SB3's `MlpPolicy` is stateless so there is
+nothing to reset today, but a vec env auto-resets a finished slot mid-loop —
+so a policy carrying recurrent state would begin that slot's next episode with
+the previous episode's latent still in it. Nothing in the result format catches
+that: the fingerprints would still match, because the *environment* restarted
+correctly and only the policy did not, and the comparison would report a real
+difference between a policy and a contaminated version of itself.
+
+A harness reusing this rollout loop has to clear that state where
+`live &= ~dones` already runs — the `dones` mask is exactly the set of slots to
+clear. A harness writing its own loop has to do the same thing in its own. It
+is described here rather than implemented because there is no stateful policy
+to test it against yet, and it must be right before a recurrent policy's
+numbers mean anything.
+
 ### Evaluating a world-model policy, or any other
 
 Everything from the rollout outwards is already policy-agnostic. `dock_criteria`
