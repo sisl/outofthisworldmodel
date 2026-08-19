@@ -1,0 +1,46 @@
+# The near-shell progress-reward config flown against a NON-COOPERATIVE
+# target: owm-envs' `noncooperative` sensor-noise preset in place of the
+# `cooperative` one every other iss-numerical config carries.
+#
+# WHAT CHANGES. Cooperative navigation is differential-GNSS-class -- the
+# target broadcasts its own state, so position error is a fixed 0.05 m at
+# every range. Non-cooperative navigation is chaser-derived (vision or
+# LIDAR-class): there is no constant floor, error is 1% of the measured
+# range, and the velocity estimate is differentiated from those positions
+# rather than carried on a broadcast, so it coarsens by 15x to 0.03 m/s.
+# Attitude and body rate are unchanged -- both come from the chaser's own
+# star tracker and gyro, which do not care what the target does.
+#
+# WHAT IT MEANS AT THIS SHELL. Numbers are total-RMS (Euclidean-norm
+# position error, per owm-envs' SensorNoiseConfig convention). At the
+# 100-125 m start the policy sees ~1.1 m of position error against the
+# cooperative 0.05 m -- 22x worse, and larger than the 0.1 m dock gate by an
+# order of magnitude. The error shrinks with the range it scales against,
+# so it is ~1 cm at 1 m and ~1 mm at the gate: the approach is navigated
+# blind by cooperative standards and the terminal metre is not.
+#
+# THE POSITION CHANNEL CROSSES OVER AT 5 m. A range-proportional error with
+# no constant floor is BELOW the cooperative preset's flat 0.05 m once
+# 0.01 * range drops under it, so inside 5 m this config sees position more
+# accurately than the cooperative one does -- 1 mm against 50 mm at the 0.1 m
+# gate. That is a property of the preset, not of real vision or LIDAR
+# navigation, which has a floor set by feature extraction and does not
+# improve without bound. Read a terminal-phase result against the
+# cooperative run with that in mind: the two differ in opposite directions
+# either side of 5 m.
+#
+# Velocity does NOT cross over. 0.03 m/s is constant, 15x the cooperative
+# 0.002 m/s at every range, and sits at 6% of the 0.5 m/s dock velocity gate
+# for the whole episode -- so velocity, not position, is the channel this
+# config degrades where the gate is scored.
+defaults:
+  - iss_numerical_ports_progress_1hz_near
+  - _self_
+
+sensor_noise:
+  enabled: true
+  sigma_pos_m: 0.0
+  sigma_pos_frac_of_range: 0.01
+  sigma_vel_m_s: 0.03
+  sigma_att_rad: 5.0e-05
+  sigma_rate_rad_s: 1.0e-05
