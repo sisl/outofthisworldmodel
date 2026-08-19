@@ -106,6 +106,9 @@ DEFAULT_ENVIRONMENTS = "iss_numerical_ports"
 #   dock_success   -> environments.reward_weights.dock_success
 #   collision_penalty -> environments.reward_weights.collision
 #   progress       -> environments.reward_weights.progress
+#   proximity      -> environments.reward_weights.proximity
+#   alignment      -> environments.reward_weights.alignment
+#   effort         -> environments.reward_weights.effort
 #
 # The reward weights are routable because a sweep may legitimately search over
 # them, but doing so only means anything against a reward-independent
@@ -130,6 +133,9 @@ ROUTES = {
     "dock_success": "environments.reward_weights.dock_success",
     "collision_penalty": "environments.reward_weights.collision",
     "progress": "environments.reward_weights.progress",
+    "proximity": "environments.reward_weights.proximity",
+    "alignment": "environments.reward_weights.alignment",
+    "effort": "environments.reward_weights.effort",
 }
 RESERVED_KEYS = frozenset({ALGO_KEY, ENVIRONMENTS_KEY, *ROUTES})
 
