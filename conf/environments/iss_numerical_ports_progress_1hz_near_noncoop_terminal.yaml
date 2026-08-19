@@ -1,0 +1,20 @@
+# The terminal-shaping reward flown against the non-cooperative target:
+# iss_numerical_ports_progress_1hz_near_noncoop's sensor noise with the
+# same reward block as iss_numerical_ports_progress_1hz_near_terminal --
+# see that file for the sizing of every term, and the noncoop config for
+# what the noise preset changes. Duplicated rather than double-inherited:
+# hydra composes one parent chain per group, and nine lines of weights
+# are cheaper than a defaults-list subtlety.
+defaults:
+  - iss_numerical_ports_progress_1hz_near_noncoop
+  - _self_
+
+reward_weights:
+  attitude: -0.2
+  proximity: 0.5
+  alignment: 0.5
+  effort: -0.05
+reward_shaping:
+  rotation_gate_far: 0.5
+  proximity_scale_m: 1.0
+  alignment_attitude_scale_rad: 0.1

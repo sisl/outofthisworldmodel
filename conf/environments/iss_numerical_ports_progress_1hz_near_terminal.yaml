@@ -1,0 +1,47 @@
+# The near-shell progress config with the terminal-shaping reward: the
+# proximity and alignment bonuses, the effort cost, and an attitude term
+# heavy enough to matter at every port. Needs an owm-envs with
+# RewardWeights.proximity/alignment/effort (branch de/terminal-shaping);
+# on the older pin, composing this config fails at env construction.
+#
+#   just train-ppo rl=ppo_tuned \
+#       environments=iss_numerical_ports_progress_1hz_near_terminal
+#
+# WHY. Policies trained on the penalties alone (runs/evals/paper/*) learn
+# the approach and then hold a port-specific standoff: the pseudo-Huber
+# position term is worth ~0.0016 a step between 1 m and 0.1 m, the +1000
+# dock bonus fires through a four-way conjunction exploration never
+# samples, attitude at -0.03 is bought wholesale by learning the majority
+# (nadir) port attitude, and with no effort cost the hold is a ~1 kN
+# alternating chatter whose position jitter alone exceeds the 0.1 m gate.
+# One term per gap:
+#
+#   proximity  +0.5 * exp(-d / 1 m): worth 0.18/step at 1 m against the
+#              absolute term's 0.0016 -- the last metres become the
+#              steepest part of the reward instead of the flattest.
+#   alignment  +0.5 * exp(-d / 1 m) * exp(-att / 0.1 rad): the dense
+#              precursor of the dock event, paid only close AND pointed,
+#              so the correct terminal pose is worth holding per port.
+#   effort     -0.05 * (|F|/1600 N + |tau|/2000 Nm): the observed 1 kN
+#              hold chatter costs ~0.03/step against the ~0.2/step the
+#              bonuses pay at 1 m -- quiet holds win, approaches (~100 s
+#              of thrust) lose ~5 of return and stay worth flying.
+#   attitude   -0.2 (from -0.03), rotation_gate_far 0.5 (from 0.1): the
+#              pose matters at approach ranges, not only inside 25 m.
+#
+# Collision stays -2/step and progress -2.0: closing is still paid as it
+# happens, and the keep-out price that made the ~1 m corridors worth
+# entering only precisely is unchanged.
+defaults:
+  - iss_numerical_ports_progress_1hz_near
+  - _self_
+
+reward_weights:
+  attitude: -0.2
+  proximity: 0.5
+  alignment: 0.5
+  effort: -0.05
+reward_shaping:
+  rotation_gate_far: 0.5
+  proximity_scale_m: 1.0
+  alignment_attitude_scale_rad: 0.1
