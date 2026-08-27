@@ -46,7 +46,12 @@ from owm.baselines.rl.eval_matrix import (
     run_dir_for,
 )
 from owm.baselines.rl.evaluate import resolve_checkpoint
-from owm.baselines.rl.film import DEFAULT_CHECKPOINT, eval_outcome
+from owm.baselines.rl.film import (
+    DEFAULT_CHECKPOINT,
+    EVAL_DROPS,
+    eval_outcome,
+    resolve_evals,
+)
 from owm.baselines.rl.run_state import load_run_config
 
 SUNLIT_MIN = 0.95
@@ -54,16 +59,7 @@ ECLIPSE_MAX = 0.05
 EVAL_BASE_SEED = 100_000
 EVAL_PORT_STRIDE = 10_000
 EVAL_TRIALS = 50
-# One label may name several drops: the first that exists is read, so the same
-# command works whether the world-model drop sits beside the RL one or only in
-# the paper's figure data.
-DEFAULT_EVALS: dict[str, tuple[Path, ...]] = {
-    "ppo": (Path("runs/evals/paper/ppo_coop"),),
-    "owm": (
-        Path("runs/evals/paper/owm_coop"),
-        Path.home() / "repos/amos_2026/figures/data/evals/owm_coop",
-    ),
-}
+SHADOW_THRESHOLD = 0.5
 
 
 def lighting_tag(fraction: float) -> str:
@@ -92,9 +88,40 @@ def default_seeds(port: str, base_seed: int = EVAL_BASE_SEED,
 
 
 def _illumination_of(state: jnp.ndarray, layout: StateLayout) -> jnp.ndarray:
+    """Lit fraction at one state; `layout.epoch` and `layout.chief` must be slices."""
     epoch = epoch_from_prefix(state[layout.epoch])
     chief = state[layout.chief]
     return illumination(epoch, chief[0:3])
+
+
+def _require_orbit_slices(layout: StateLayout, env_name: str) -> None:
+    """Refuse an env whose state carries no orbit to trace the lighting along.
+
+    Both slices are optional in a `StateLayout`, and an env without them holds
+    no epoch and no chief position, so there is no illumination to report.
+    Named here rather than indexed with `None` inside the traced `vmap`, where
+    the failure is a shape error about an env the user never chose.
+    """
+    missing = [name for name in ("epoch", "chief") if getattr(layout, name) is None]
+    if missing:
+        raise SystemExit(
+            f"env '{env_name}' has no {' or '.join(missing)} in its state layout; "
+            f"scout needs both to trace the chief's illumination")
+
+
+def shadow_tag(profile: np.ndarray) -> str:
+    """Which way `profile` crosses the terminator, if it crosses it at all.
+
+    The manifest's `transition` tag says only that a crossing happens; this
+    says which way, which is what picks the shot -- an approach flying into
+    the dark reads very differently from one coming out of it.
+    """
+    first, last = float(profile[0]), float(profile[-1])
+    if first > SHADOW_THRESHOLD and last < SHADOW_THRESHOLD:
+        return "enters"
+    if first < SHADOW_THRESHOLD and last > SHADOW_THRESHOLD:
+        return "exits"
+    return "-"
 
 
 def illumination_profile(states: np.ndarray, layout: StateLayout) -> np.ndarray:
@@ -128,7 +155,9 @@ def _trace_chief(cfg: BaseTaskConfig, seed: int) -> tuple[np.ndarray, float]:
 def scout_seeds(cfg: BaseTaskConfig, seeds: Iterable[int], port: str,
                 evals_dirs: dict[str, Path]) -> list[dict]:
     """One row per seed: its lighting, its opening range, its known outcomes."""
-    layout = env_spec(env_name_of(cfg)).layout
+    spec = env_spec(env_name_of(cfg))
+    layout = spec.layout
+    _require_orbit_slices(layout, spec.name)
     rows = []
     for seed in seeds:
         states, start_range = _trace_chief(cfg, seed)
@@ -139,23 +168,12 @@ def scout_seeds(cfg: BaseTaskConfig, seeds: Iterable[int], port: str,
             "lighting": lighting_tag(fraction),
             "illumination": fraction,
             "start_range_m": start_range,
-            "enters_shadow": bool(profile[0] > 0.5 and profile[-1] < 0.5),
-            "exits_shadow": bool(profile[0] < 0.5 and profile[-1] > 0.5),
+            "shadow": shadow_tag(profile),
         }
         for label, directory in evals_dirs.items():
             row[f"{label}_outcome"] = eval_outcome(directory, port, seed)
         rows.append(row)
     return rows
-
-
-def resolve_evals(candidates: dict[str, tuple[Path, ...]]) -> dict[str, Path]:
-    """The first drop that exists per label; labels with none are dropped."""
-    found = {}
-    for label, paths in candidates.items():
-        existing = next((path for path in paths if path.exists()), None)
-        if existing is not None:
-            found[label] = existing
-    return found
 
 
 def _parse_seeds(spec: str | None, port: str) -> list[int]:
@@ -168,13 +186,13 @@ def _parse_seeds(spec: str | None, port: str) -> list[int]:
 
 
 def print_rows(rows: Sequence[dict], labels: Sequence[str]) -> None:
-    header = (f"{'seed':>7} {'lighting':<11} {'illum':>6} {'range_m':>8} "
+    header = (f"{'seed':>7} {'lighting':<11} {'illum':>6} {'shadow':>7} {'range_m':>8} "
               + " ".join(f"{label:>10}" for label in labels))
     print(header)
     for row in rows:
         outcomes = " ".join(f"{(row.get(f'{label}_outcome') or '-'):>10}" for label in labels)
         print(f"{row['seed']:>7} {row['lighting']:<11} {row['illumination']:6.2f} "
-              f"{row['start_range_m']:8.1f} {outcomes}", flush=True)
+              f"{row['shadow']:>7} {row['start_range_m']:8.1f} {outcomes}", flush=True)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -191,7 +209,7 @@ def main(argv: list[str] | None = None) -> None:
     run_dir = run_dir_for(ckpt, None)
     base = at_rate(base_env_conf(run_dir, load_run_config(run_dir)), args.rate_hz)
     cfg = env_config(for_port(base, args.port))
-    evals = resolve_evals(DEFAULT_EVALS)
+    evals = resolve_evals(EVAL_DROPS)
     rows = scout_seeds(cfg, _parse_seeds(args.seeds, args.port), args.port, evals)
     print_rows(rows, list(evals))
 

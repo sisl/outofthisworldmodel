@@ -296,6 +296,17 @@ the policy's 1 Hz decisions held for 20 steps), which is what makes the truth
 video smooth; the 1 Hz evaluation outcome is printed beside each row for
 comparison, and `meta.json.start_fingerprint` matches the evaluation's.
 
+`meta.json.produced_by` names the checkpoint the row was flown with, so a
+directory filmed over two sessions with two policies can be told apart after
+the fact. The `eval=` column is the paper's evaluation drop for the same
+`(port, seed)`, read through the drop's `env_docked`/`escaped`/`ever_collided`
+flags so it lands in the same vocabulary the film's own outcome uses -- a drop
+never says `collision`, it says `truncated` beside a collision flag. Rows
+already on disk are skipped, but only after their stored port, seed, cadence
+and checkpoint are checked against the manifest: change a row's seed or
+`rate_hz`/`action_repeat`, or point `--checkpoint` at another policy, and the
+run stops naming the mismatch until `--force` refilms it.
+
 ## Promoting a run's best checkpoint
 
 A finished run's best policy is not its last one — PPO's entropy collapses

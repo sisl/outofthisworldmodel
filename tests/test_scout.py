@@ -8,16 +8,23 @@ from owm.envs.factory import (  # isort: skip
     make_env,
 )
 
+from dataclasses import replace
+from types import SimpleNamespace
+
 import numpy as np
+import pytest
 from conftest import smoke_cfg
 from omegaconf import OmegaConf
 
+from owm.baselines.rl import scout
 from owm.baselines.rl.eval_matrix import at_rate, for_port
 from owm.baselines.rl.scout import (
     default_seeds,
     illumination_profile,
     lighting_tag,
+    print_rows,
     scout_seeds,
+    shadow_tag,
 )
 
 
@@ -72,7 +79,8 @@ def test_scout_reports_one_row_per_seed(tmp_path):
     cfg = _smoke_env_conf(tmp_path, 1, 3, "harmony_fwd_pma2")
     rows = scout_seeds(cfg, [100000, 100001], "harmony_fwd_pma2", evals_dirs={})
     assert [row["seed"] for row in rows] == [100000, 100001]
-    assert set(rows[0]) >= {"seed", "lighting", "illumination", "start_range_m"}
+    assert set(rows[0]) >= {"seed", "lighting", "illumination", "start_range_m", "shadow"}
+    assert rows[0]["shadow"] in {"enters", "exits", "-"}
     assert rows[0]["start_range_m"] > 0.0
     assert rows[0]["lighting"] in {"sunlit", "eclipse", "transition"}
 
@@ -86,3 +94,37 @@ def test_scout_reads_an_outcome_out_of_an_eval_drop(tmp_path):
     cfg = _smoke_env_conf(tmp_path, 1, 3, "harmony_fwd_pma2")
     rows = scout_seeds(cfg, [100000, 100001], "harmony_fwd_pma2", evals_dirs={"ppo": drop})
     assert [row["ppo_outcome"] for row in rows] == ["docked", "escaped"]
+
+
+def test_shadow_tag_names_the_crossing():
+    assert shadow_tag(np.array([1.0, 1.0, 0.0])) == "enters"
+    assert shadow_tag(np.array([0.0, 0.0, 1.0])) == "exits"
+    assert shadow_tag(np.array([1.0, 1.0, 1.0])) == "-"
+    assert shadow_tag(np.array([0.0, 0.0, 0.0])) == "-"
+
+
+def test_scout_refuses_an_env_whose_layout_has_no_epoch(tmp_path, monkeypatch):
+    cfg = _smoke_env_conf(tmp_path, 1, 3, "harmony_fwd_pma2")
+    spec = env_spec(env_name_of(cfg))
+    blind = SimpleNamespace(name="fake-env", layout=replace(spec.layout, epoch=None))
+    monkeypatch.setattr(scout, "env_spec", lambda name: blind)
+    with pytest.raises(SystemExit, match="fake-env"):
+        scout_seeds(cfg, [100000], "harmony_fwd_pma2", evals_dirs={})
+
+
+def test_scout_refuses_an_env_whose_layout_has_no_chief(tmp_path, monkeypatch):
+    cfg = _smoke_env_conf(tmp_path, 1, 3, "harmony_fwd_pma2")
+    spec = env_spec(env_name_of(cfg))
+    blind = SimpleNamespace(name="fake-env", layout=replace(spec.layout, chief=None))
+    monkeypatch.setattr(scout, "env_spec", lambda name: blind)
+    with pytest.raises(SystemExit, match="chief"):
+        scout_seeds(cfg, [100000], "harmony_fwd_pma2", evals_dirs={})
+
+
+def test_print_rows_shows_the_shadow_column(capsys):
+    print_rows([{"seed": 100000, "lighting": "transition", "illumination": 0.5,
+                 "shadow": "enters", "start_range_m": 104.1, "ppo_outcome": "docked"}],
+               ["ppo"])
+    out = capsys.readouterr().out
+    assert "shadow" in out.splitlines()[0]
+    assert "enters" in out.splitlines()[1]
