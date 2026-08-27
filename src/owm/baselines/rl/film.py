@@ -61,9 +61,20 @@ from owm.baselines.rl.run_state import load_run_config
 from owm.baselines.rl.train import ALGOS
 
 METHOD = "rl"
-DEFAULT_CHECKPOINT = "runs/best/owm-iss-numerical-v1-coop-ppo-vector/final_model.zip"
+DEFAULT_CHECKPOINT = "runs/best/owm-iss-numerical-v1-coop-terminal-ppo-vector/final_model.zip"
 DEFAULT_VIEWS = "fpv,dragon_iso"
-DEFAULT_EVALS = Path("runs/evals/paper/ppo_coop")
+PAPER_EVALS = Path.home() / "repos/amos_2026/figures/data/evals"
+# One label may name several drops: the first that exists is read, so the same
+# command works whether a drop sits under the run tree or only in the paper's
+# figure data. The paper's own drop leads for `ppo` -- it is the evaluation
+# the deck reports, so it is the one a film is compared against.
+EVAL_DROPS: dict[str, tuple[Path, ...]] = {
+    "ppo": (PAPER_EVALS / "ppo_coop", Path("runs/evals/paper/ppo_coop")),
+    "owm": (Path("runs/evals/paper/owm_coop"), PAPER_EVALS / "owm_coop"),
+}
+# The drops record how an episode ended as flags beside a coarser `outcome`,
+# and in this order.
+EVAL_FLAG_COLUMNS = ("env_docked", "escaped", "ever_collided")
 PLOT_PNG = f"{METHOD}_traj.png"
 PLOT_MP4 = f"{METHOD}_traj.mp4"
 # The overhead plot is a slow read of the approach rather than a replay of it,
@@ -181,8 +192,17 @@ def fly_episode(
     )
 
 
+def _csv_bool(value: str) -> bool:
+    return value.strip().lower() == "true"
+
+
 def eval_outcome(evals_dir: str | Path | None, port: str, seed: int) -> str | None:
     """The outcome `eval_matrix` recorded for `(port, seed)`, if a drop holds one.
+
+    Read from the drop's flag columns wherever it carries them, so the printed
+    column speaks film's vocabulary rather than the drop's: a drop never says
+    "collision", it records `ever_collided` beside a `truncated` outcome, and
+    the two columns are only comparable once both are classified the same way.
 
     Absent whenever the drop is: the comparison column is a convenience beside
     the film, and a missing one is worth a dash in the table rather than a
@@ -196,8 +216,21 @@ def eval_outcome(evals_dir: str | Path | None, port: str, seed: int) -> str | No
     with path.open() as handle:
         for record in csv.DictReader(handle):
             if record["port"] == port and int(record["seed"]) == seed:
+                if all(column in record for column in EVAL_FLAG_COLUMNS):
+                    return classify_outcome(
+                        *(_csv_bool(record[column]) for column in EVAL_FLAG_COLUMNS))
                 return record["outcome"]
     return None
+
+
+def resolve_evals(candidates: dict[str, tuple[Path, ...]]) -> dict[str, Path]:
+    """The first drop that exists per label; labels with none are dropped."""
+    found = {}
+    for label, paths in candidates.items():
+        existing = next((path for path in paths if path.exists()), None)
+        if existing is not None:
+            found[label] = existing
+    return found
 
 
 def row_outputs(directory: Path, views: str, render: bool) -> list[Path]:
@@ -212,6 +245,22 @@ def row_outputs(directory: Path, views: str, render: bool) -> list[Path]:
                   for name in parse_view_names(views)]
         files += [directory / PLOT_PNG, directory / PLOT_MP4]
     return files
+
+
+def _requested_identity(row: RolloutRow, checkpoint: str) -> dict:
+    """What a finished row's `meta.json` must say for it to be this row.
+
+    The episode, the cadence it was flown at and the policy that flew it: two
+    directories agreeing on their name and disagreeing on any of these are two
+    different rollouts, and only one of them is the one being asked for.
+    """
+    return {
+        "port": row.port,
+        "seed": int(row.seed),
+        "rate_hz": float(row.rl.rate_hz),
+        "action_repeat": int(row.rl.action_repeat),
+        "produced_by": str(checkpoint),
+    }
 
 
 def film_row(
@@ -232,11 +281,30 @@ def film_row(
     The row is re-timed to its own `rate_hz` before its port is narrowed, the
     order `run_eval_matrix` composes the environment in, so the episode the
     seed draws here is the one that evaluation flew.
+
+    A finished row is only left alone when what is on disk is this row: its
+    stored episode, cadence and checkpoint are checked against the request and
+    a disagreement stops the run, because a directory holding some other
+    rollout under this name is worse than an hour of re-rendering. `lighting`
+    is a label rather than an input, so a changed one is written through.
     """
     directory = out_root / row.name
     if not force and all(path.exists() for path in row_outputs(directory, views, render)):
-        return {"name": row.name, "skipped": True,
-                **json.loads((directory / META_FILE).read_text())}
+        stored = json.loads((directory / META_FILE).read_text())
+        wanted = _requested_identity(row, checkpoint)
+        differing = [key for key, value in wanted.items() if stored.get(key) != value]
+        if differing:
+            detail = "; ".join(f"{key}: on disk {stored.get(key)!r}, requested {wanted[key]!r}"
+                               for key in differing)
+            raise SystemExit(
+                f"row '{row.name}' in {directory} was flown with a different "
+                f"{', '.join(differing)} ({detail}); pass --force to refilm it")
+        relit = stored.get("lighting") != row.lighting
+        if relit:
+            stored["lighting"] = row.lighting
+            (directory / META_FILE).write_text(
+                json.dumps(stored, indent=2, sort_keys=True) + "\n")
+        return {"name": row.name, "skipped": True, "relit": relit, **stored}
     timed = at_rate(base, row.rl.rate_hz)
     if max_steps is not None:
         timed = {**timed, "max_steps": max_steps}
@@ -248,7 +316,7 @@ def film_row(
         render_trajectory_clips(traj, directory, views, stride=stride)
         plot_trajectory_png(traj, directory / PLOT_PNG)
         plot_trajectory_video(traj, directory / PLOT_MP4, fps=PLOT_FPS)
-    return {"name": row.name, "skipped": False, **traj.meta}
+    return {"name": row.name, "skipped": False, "relit": False, **traj.meta}
 
 
 def run_film(
@@ -294,10 +362,12 @@ def run_film(
         result["eval_outcome"] = eval_outcome(evals_dir, row.port, row.seed)
         results.append(result)
         flag = "skipped" if result["skipped"] else "filmed"
+        note = "  lighting updated" if result["relit"] else ""
         print(f"[film] {row.name:>28} {row.port:>18} seed={row.seed} {flag}: "
-              f"{result['outcome']:<10} steps={result['steps']:<5} "
+              f"{result['outcome']:<10} collided={'Y' if result['ever_collided'] else 'N'} "
+              f"steps={result['steps']:<5} "
               f"min_range={result['min_range_m']:6.2f} m  "
-              f"eval={result['eval_outcome'] or '-'}", flush=True)
+              f"eval={result['eval_outcome'] or '-'}{note}", flush=True)
     return results
 
 
@@ -312,9 +382,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--force", action="store_true", help="Refilm rows that already have clips.")
     parser.add_argument("--only", nargs="*", default=[],
                         help="Row names to film; default all rl rows.")
-    parser.add_argument("--evals", type=Path, default=DEFAULT_EVALS,
-                        help="eval_matrix drop whose episodes.csv outcome is printed "
-                             "beside each row.")
+    parser.add_argument("--evals", type=Path, default=None,
+                        help="eval_matrix drop whose episodes.csv outcome is printed beside "
+                             "each row; the first EVAL_DROPS['ppo'] drop that exists otherwise.")
     parser.add_argument("--no-render", action="store_true", help="Write the trajectory file only.")
     parser.add_argument("--gpu-index", type=int, default=None,
                         help="Which GPU to render on; OWM_ENVS_GPU_INDEX otherwise.")
@@ -323,8 +393,9 @@ def main(argv: list[str] | None = None) -> None:
         parser.error(f"--stride must be >= 1, got {args.stride}")
     if not args.no_render:
         select_gpu(args.gpu_index)
+    evals = args.evals if args.evals is not None else resolve_evals(EVAL_DROPS).get("ppo")
     run_film(args.manifest, args.out, args.checkpoint, args.views, args.stride, args.force,
-             list(args.only), args.evals, not args.no_render)
+             list(args.only), evals, not args.no_render)
 
 
 if __name__ == "__main__":

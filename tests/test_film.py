@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 # Ahead of the owm_envs imports below: importing it pins JAX to CPU, which XLA
@@ -11,7 +12,16 @@ from owm_envs.datasets.trajectory import load_trajectory, save_trajectory, start
 
 from owm.baselines.rl.eval_matrix import at_rate, base_env_conf, for_port
 from owm.baselines.rl.evaluate import load_normalizer
-from owm.baselines.rl.film import classify_outcome, eval_outcome, fly_episode, run_film
+from owm.baselines.rl.film import (
+    DEFAULT_CHECKPOINT,
+    EVAL_DROPS,
+    PAPER_EVALS,
+    classify_outcome,
+    eval_outcome,
+    fly_episode,
+    resolve_evals,
+    run_film,
+)
 from owm.baselines.rl.run_state import FINAL_MODEL, load_run_config
 from owm.baselines.rl.train import ALGOS, run_training
 
@@ -125,3 +135,100 @@ def test_run_film_only_refuses_a_row_it_cannot_film(trained_run, tmp_path):
     with pytest.raises(SystemExit, match="b"):
         run_film(manifest, tmp_path / "rollouts", str(trained_run / FINAL_MODEL),
                  render=False, only=["b"], max_steps=40)
+
+
+def test_default_checkpoint_is_the_terminal_shaping_run():
+    assert DEFAULT_CHECKPOINT == (
+        "runs/best/owm-iss-numerical-v1-coop-terminal-ppo-vector/final_model.zip")
+    assert "-terminal-" in DEFAULT_CHECKPOINT
+
+
+def test_ppo_eval_drops_name_the_paper_drop_first():
+    assert EVAL_DROPS["ppo"][0] == PAPER_EVALS / "ppo_coop"
+    assert Path("runs/evals/paper/ppo_coop") in EVAL_DROPS["ppo"]
+    assert PAPER_EVALS / "owm_coop" in EVAL_DROPS["owm"]
+
+
+def test_resolve_evals_takes_the_first_drop_that_exists(tmp_path):
+    present = tmp_path / "present"
+    present.mkdir()
+    resolved = resolve_evals({
+        "a": (tmp_path / "absent", present),
+        "b": (tmp_path / "gone", tmp_path / "also_gone"),
+    })
+    assert resolved == {"a": present}
+
+
+def test_eval_outcome_classifies_the_flag_columns(tmp_path):
+    (tmp_path / "episodes.csv").write_text(
+        "port,split,trial,seed,steps,outcome,env_docked,ever_collided,escaped\n"
+        f"{PORT},train,0,100000,360,truncated,False,True,False\n"
+        f"{PORT},train,1,100001,360,truncated,False,False,False\n"
+        f"{PORT},train,2,100002,200,docked,True,True,False\n"
+    )
+    # The drops never say "collision": a truncated row that grazed the zone is
+    # a collision in film's vocabulary.
+    assert eval_outcome(tmp_path, PORT, 100000) == "collision"
+    assert eval_outcome(tmp_path, PORT, 100001) == "truncated"
+    assert eval_outcome(tmp_path, PORT, 100002) == "docked"
+
+
+def _one_row_manifest(tmp_path: Path, lighting: str = "sunlit") -> Path:
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(
+        "rollouts:\n"
+        f"  - {{name: a, port: {PORT}, seed: 3, lighting: {lighting}, distribution: train,\n"
+        "     methods: {rl: {rate_hz: 20, action_repeat: 20}}}\n"
+    )
+    return manifest
+
+
+def test_skip_refuses_a_row_flown_by_another_checkpoint(trained_run, tmp_path):
+    manifest = _one_row_manifest(tmp_path)
+    out = tmp_path / "rollouts"
+    run_film(manifest, out, str(trained_run / FINAL_MODEL), views="fpv", render=False,
+             max_steps=40)
+    meta_path = out / "a" / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    meta["produced_by"] = "runs/best/somewhere-else/final_model.zip"
+    meta_path.write_text(json.dumps(meta))
+    with pytest.raises(SystemExit, match="produced_by"):
+        run_film(manifest, out, str(trained_run / FINAL_MODEL), views="fpv", render=False,
+                 max_steps=40)
+    # --force refilms it rather than refusing.
+    forced = run_film(manifest, out, str(trained_run / FINAL_MODEL), views="fpv", force=True,
+                      render=False, max_steps=40)
+    assert forced[0]["skipped"] is False
+
+
+def test_skip_refuses_a_row_flown_at_another_cadence(trained_run, tmp_path):
+    manifest = _one_row_manifest(tmp_path)
+    out = tmp_path / "rollouts"
+    run_film(manifest, out, str(trained_run / FINAL_MODEL), views="fpv", render=False,
+             max_steps=40)
+    manifest.write_text(manifest.read_text().replace("action_repeat: 20", "action_repeat: 10"))
+    with pytest.raises(SystemExit, match="action_repeat"):
+        run_film(manifest, out, str(trained_run / FINAL_MODEL), views="fpv", render=False,
+                 max_steps=40)
+
+
+def test_skip_rewrites_the_stored_lighting(trained_run, tmp_path, capsys):
+    manifest = _one_row_manifest(tmp_path, lighting="sunlit")
+    out = tmp_path / "rollouts"
+    run_film(manifest, out, str(trained_run / FINAL_MODEL), views="fpv", render=False,
+             max_steps=40)
+    manifest.write_text(manifest.read_text().replace("lighting: sunlit", "lighting: eclipse"))
+    again = run_film(manifest, out, str(trained_run / FINAL_MODEL), views="fpv", render=False,
+                     max_steps=40)
+    assert again[0]["skipped"] is True and again[0]["relit"] is True
+    assert again[0]["lighting"] == "eclipse"
+    assert json.loads((out / "a" / "meta.json").read_text())["lighting"] == "eclipse"
+    assert "lighting updated" in capsys.readouterr().out
+
+
+def test_summary_prints_the_collision_flag(trained_run, tmp_path, capsys):
+    manifest = _one_row_manifest(tmp_path)
+    results = run_film(manifest, tmp_path / "rollouts", str(trained_run / FINAL_MODEL),
+                       views="fpv", render=False, max_steps=40)
+    expected = "Y" if results[0]["ever_collided"] else "N"
+    assert f"collided={expected}" in capsys.readouterr().out

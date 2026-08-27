@@ -66,3 +66,10 @@ def test_unknown_row_keys_are_ignored(tmp_path):
     )
     rows = load_manifest(write(tmp_path, text))
     assert rows[1].seed == 140007
+
+
+def test_missing_method_key_keeps_the_underlying_cause(tmp_path):
+    text = GOOD.replace("rl: {rate_hz: 20, action_repeat: 20}", "rl: {rate_hz: 20}")
+    with pytest.raises(ValueError, match="action_repeat") as excinfo:
+        load_manifest(write(tmp_path, text))
+    assert isinstance(excinfo.value.__cause__, KeyError)

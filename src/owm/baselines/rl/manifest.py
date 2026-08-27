@@ -42,7 +42,9 @@ def _settings(raw: dict | None, row: str, method: str) -> MethodSettings | None:
         settings = MethodSettings(rate_hz=float(raw["rate_hz"]),
                                   action_repeat=int(raw["action_repeat"]))
     except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError(f"rollout '{row}' methods.{method} needs rate_hz and action_repeat: {exc}")
+        raise ValueError(
+            f"rollout '{row}' methods.{method} needs rate_hz and action_repeat: {exc}"
+        ) from exc
     if settings.rate_hz <= 0 or settings.action_repeat < 1:
         raise ValueError(f"rollout '{row}' methods.{method}: rate_hz must be > 0 and "
                          f"action_repeat >= 1, got {settings}")
