@@ -11,7 +11,7 @@ from owm_envs.datasets.trajectory import load_trajectory, save_trajectory, start
 
 from owm.baselines.rl.eval_matrix import at_rate, base_env_conf, for_port
 from owm.baselines.rl.evaluate import load_normalizer
-from owm.baselines.rl.film import classify_outcome, fly_episode
+from owm.baselines.rl.film import classify_outcome, eval_outcome, fly_episode, run_film
 from owm.baselines.rl.run_state import FINAL_MODEL, load_run_config
 from owm.baselines.rl.train import ALGOS, run_training
 
@@ -73,3 +73,55 @@ def test_start_fingerprint_matches_a_direct_reset(trained_run):
     _, slow_info = slow.reset(seed=11)
     slow.close()
     assert start_fingerprint(slow_info["state"]) == traj.meta["start_fingerprint"]
+
+
+def test_eval_outcome_reads_the_matching_row(tmp_path):
+    (tmp_path / "episodes.csv").write_text(
+        "port,split,trial,seed,steps,outcome\n"
+        "harmony_fwd_pma2,train,0,100000,360,truncated\n"
+        "harmony_fwd_pma2,train,1,100001,200,docked\n"
+    )
+    assert eval_outcome(tmp_path, PORT, 100001) == "docked"
+    assert eval_outcome(tmp_path, PORT, 999) is None
+    assert eval_outcome(None, PORT, 100001) is None
+    assert eval_outcome(tmp_path / "absent", PORT, 100001) is None
+
+
+def test_run_film_writes_a_trajectory_per_rl_row(trained_run, tmp_path):
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(
+        "rollouts:\n"
+        "  - {name: a, port: harmony_fwd_pma2, seed: 3, lighting: sunlit, distribution: train,\n"
+        "     methods: {rl: {rate_hz: 20, action_repeat: 20}}}\n"
+        "  - {name: b, port: rassvet_nadir, seed: 4, lighting: eclipse, distribution: train,\n"
+        "     methods: {wm: {rate_hz: 20, action_repeat: 5}}}\n"
+    )
+    out = tmp_path / "rollouts"
+    results = run_film(manifest, out, str(trained_run / FINAL_MODEL), views="fpv",
+                       stride=1, force=False, only=[], evals_dir=None, render=False,
+                       max_steps=40)
+    assert [r["name"] for r in results] == ["a"]
+    assert (out / "a" / "trajectory.npz").exists()
+    assert (out / "a" / "meta.json").exists()
+    assert not (out / "b").exists()
+    # A second run skips the finished row unless forced.
+    again = run_film(manifest, out, str(trained_run / FINAL_MODEL), views="fpv",
+                     stride=1, force=False, only=[], evals_dir=None, render=False,
+                     max_steps=40)
+    assert again[0]["skipped"] is True
+    assert results[0]["skipped"] is False
+    assert again[0]["start_fingerprint"] == results[0]["start_fingerprint"]
+
+
+def test_run_film_only_refuses_a_row_it_cannot_film(trained_run, tmp_path):
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(
+        "rollouts:\n"
+        "  - {name: a, port: harmony_fwd_pma2, seed: 3, lighting: sunlit, distribution: train,\n"
+        "     methods: {rl: {rate_hz: 20, action_repeat: 20}}}\n"
+        "  - {name: b, port: rassvet_nadir, seed: 4, lighting: eclipse, distribution: train,\n"
+        "     methods: {wm: {rate_hz: 20, action_repeat: 5}}}\n"
+    )
+    with pytest.raises(SystemExit, match="b"):
+        run_film(manifest, tmp_path / "rollouts", str(trained_run / FINAL_MODEL),
+                 render=False, only=["b"], max_steps=40)

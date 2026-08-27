@@ -76,6 +76,10 @@ promote RUN_DIR *ARGS:
 compare RUN_A RUN_B *ARGS:
     uv run python -m owm.baselines.rl.compare {{RUN_A}} {{RUN_B}} {{ARGS}}
 
+# Film the presentation manifest's rl rows: trajectory file, clips and plots per row
+film MANIFEST OUT *ARGS:
+    uv run python -m owm.baselines.rl.film --manifest {{MANIFEST}} --out {{OUT}} {{ARGS}}
+
 # Create a wandb sweep from sweeps/<SWEEP>.yaml; prints the sweep id
 sweep-init SWEEP:
     uv run wandb sweep --entity "$WANDB_ENTITY" --project "$WANDB_PROJECT" \

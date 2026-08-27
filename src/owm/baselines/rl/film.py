@@ -1,10 +1,20 @@
-"""Fly a checkpoint on one rollout row, into a trajectory file.
+"""Film the rollout manifest with an RL checkpoint.
 
-The row is flown once, deterministically, from the reset its seed draws, at
-the row's `rate_hz` with its `action_repeat` held by this loop rather than by
-the `ActionRepeat` wrapper -- so every integration step is recorded, not only
-the decision steps -- and handed back as the `Trajectory` owm-envs' render
-and plot commands read.
+    just film media/manifest.yaml media/rollouts --gpu-index 3
+
+Every manifest row naming an `rl` method is flown into its own directory
+under the output root -- the trajectory file, one clip per view and the
+overhead plot -- and printed beside the outcome `eval_matrix` recorded for
+the same `(port, seed)`, which is the comparison the deck makes.
+
+A row is flown once, deterministically, from the reset its seed draws, at the
+row's `rate_hz` with its `action_repeat` held by this loop rather than by the
+`ActionRepeat` wrapper -- so every integration step is recorded, not only the
+decision steps -- and handed back as the `Trajectory` owm-envs' render and
+plot commands read.
+
+Rows whose outputs are all present are left alone unless `--force`, so a run
+interrupted partway through resumes rather than re-rendering what it has.
 """
 
 from __future__ import annotations
@@ -12,13 +22,53 @@ from __future__ import annotations
 # Ahead of the owm_envs imports below, and not sorted in with them: importing
 # it pins JAX to CPU, and XLA reads the platform when its backend first comes
 # up, which owm_envs triggers as it is imported.
-from owm.envs.factory import env_conf_dict, env_name_of, env_spec, make_env  # isort: skip
+from owm.envs.factory import (  # isort: skip
+    env_conf_dict,
+    env_config,
+    env_name_of,
+    env_spec,
+    make_env,
+)
+
+import argparse
+import csv
+import json
+from collections.abc import Sequence
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from owm_envs.datasets.trajectory import Trajectory, start_fingerprint
+from omegaconf import OmegaConf
+from owm_envs.datasets.trajectory import (
+    ARRAY_FILE,
+    META_FILE,
+    SHORT_VIEW_NAMES,
+    Trajectory,
+    save_trajectory,
+    start_fingerprint,
+)
+from owm_envs.datasets.trajectory_plot import plot_trajectory_png, plot_trajectory_video
+from owm_envs.datasets.trajectory_render import render_trajectory_clips
+from owm_envs.datasets.video import parse_view_names
 from owm_envs.envs.common.config import BaseTaskConfig
+from owm_envs.render.device import select_gpu
+
+from owm.baselines.rl.eval_matrix import at_rate, base_env_conf, for_port, run_dir_for
+from owm.baselines.rl.evaluate import load_normalizer, resolve_checkpoint
+from owm.baselines.rl.manifest import RolloutRow, load_manifest
+from owm.baselines.rl.run_state import load_run_config
+from owm.baselines.rl.train import ALGOS
+
+METHOD = "rl"
+DEFAULT_CHECKPOINT = "runs/best/owm-iss-numerical-v1-coop-ppo-vector/final_model.zip"
+DEFAULT_VIEWS = "fpv,dragon_iso"
+DEFAULT_EVALS = Path("runs/evals/paper/ppo_coop")
+PLOT_PNG = f"{METHOD}_traj.png"
+PLOT_MP4 = f"{METHOD}_traj.mp4"
+# The overhead plot is a slow read of the approach rather than a replay of it,
+# so it is written at a fixed rate instead of the episode's own.
+PLOT_FPS = 10
 
 
 def classify_outcome(docked: bool, escaped: bool, ever_collided: bool) -> str:
@@ -100,7 +150,7 @@ def fly_episode(
     epoch = (state[:, epoch_slice] if epoch_slice is not None
              else np.zeros((state.shape[0], 2), dtype=np.float64))
     meta = {
-        "method": "rl",
+        "method": METHOD,
         "port": port,
         "seed": int(seed),
         "env": spec.name,
@@ -129,3 +179,153 @@ def fly_episode(
         dock_target=goal,
         meta=meta,
     )
+
+
+def eval_outcome(evals_dir: str | Path | None, port: str, seed: int) -> str | None:
+    """The outcome `eval_matrix` recorded for `(port, seed)`, if a drop holds one.
+
+    Absent whenever the drop is: the comparison column is a convenience beside
+    the film, and a missing one is worth a dash in the table rather than a
+    stopped render.
+    """
+    if evals_dir is None:
+        return None
+    path = Path(evals_dir) / "episodes.csv"
+    if not path.is_file():
+        return None
+    with path.open() as handle:
+        for record in csv.DictReader(handle):
+            if record["port"] == port and int(record["seed"]) == seed:
+                return record["outcome"]
+    return None
+
+
+def row_outputs(directory: Path, views: str, render: bool) -> list[Path]:
+    """Every file filming one row writes, so a finished row can be recognised.
+
+    Named from the view selection rather than assumed, so a run asking for one
+    view is skipped on that view's clip and not on one it never renders.
+    """
+    files = [directory / ARRAY_FILE, directory / META_FILE]
+    if render:
+        files += [directory / f"{METHOD}_{SHORT_VIEW_NAMES[name]}.mp4"
+                  for name in parse_view_names(views)]
+        files += [directory / PLOT_PNG, directory / PLOT_MP4]
+    return files
+
+
+def film_row(
+    row: RolloutRow,
+    model,
+    vecnorm,
+    base: dict,
+    out_root: Path,
+    checkpoint: str,
+    views: str = DEFAULT_VIEWS,
+    stride: int = 1,
+    force: bool = False,
+    render: bool = True,
+    max_steps: int | None = None,
+) -> dict:
+    """Fly and draw one row into `out_root/<name>`, or report it already done.
+
+    The row is re-timed to its own `rate_hz` before its port is narrowed, the
+    order `run_eval_matrix` composes the environment in, so the episode the
+    seed draws here is the one that evaluation flew.
+    """
+    directory = out_root / row.name
+    if not force and all(path.exists() for path in row_outputs(directory, views, render)):
+        return {"name": row.name, "skipped": True,
+                **json.loads((directory / META_FILE).read_text())}
+    timed = at_rate(base, row.rl.rate_hz)
+    if max_steps is not None:
+        timed = {**timed, "max_steps": max_steps}
+    cfg = env_config(for_port(timed, row.port))
+    traj = fly_episode(model, vecnorm, cfg, row.seed, row.rl.action_repeat, row.rl.rate_hz,
+                       row.port, row.lighting, produced_by=checkpoint)
+    save_trajectory(traj, directory)
+    if render:
+        render_trajectory_clips(traj, directory, views, stride=stride)
+        plot_trajectory_png(traj, directory / PLOT_PNG)
+        plot_trajectory_video(traj, directory / PLOT_MP4, fps=PLOT_FPS)
+    return {"name": row.name, "skipped": False, **traj.meta}
+
+
+def run_film(
+    manifest: str | Path,
+    out_root: str | Path,
+    checkpoint: str = DEFAULT_CHECKPOINT,
+    views: str = DEFAULT_VIEWS,
+    stride: int = 1,
+    force: bool = False,
+    only: Sequence[str] = (),
+    evals_dir: str | Path | None = None,
+    render: bool = True,
+    max_steps: int | None = None,
+) -> list[dict]:
+    """Film every `rl` row of `manifest`, one directory per row under `out_root`.
+
+    One checkpoint is loaded for the whole manifest -- the rows differ in their
+    episode, not in their policy -- and each row is printed as it finishes,
+    beside the outcome evaluation recorded for the same episode.
+    """
+    rows = [row for row in load_manifest(manifest) if row.rl is not None]
+    if only:
+        unknown = sorted(set(only) - {row.name for row in rows})
+        if unknown:
+            raise SystemExit(
+                f"--only names rows with no rl entry or not in the manifest: {unknown}")
+        rows = [row for row in rows if row.name in only]
+    ckpt = resolve_checkpoint(str(checkpoint))
+    run_dir = run_dir_for(ckpt, None)
+    run_cfg = load_run_config(run_dir)
+    base = base_env_conf(run_dir, run_cfg)
+    # The run's own record says which algorithm wrote the checkpoint; a run dir
+    # predating the saved hydra config still has its env record, and `ppo` is
+    # what those runs are.
+    algo = str((run_cfg and OmegaConf.select(run_cfg, "rl.algo")) or "ppo")
+    model = ALGOS[algo].load(ckpt, device="cpu")
+    vecnorm = load_normalizer(ckpt, allow_unnormalized=False)
+    out_root = Path(out_root)
+    results = []
+    for row in rows:
+        result = film_row(row, model, vecnorm, base, out_root, str(ckpt), views, stride,
+                          force, render, max_steps=max_steps)
+        result["eval_outcome"] = eval_outcome(evals_dir, row.port, row.seed)
+        results.append(result)
+        flag = "skipped" if result["skipped"] else "filmed"
+        print(f"[film] {row.name:>28} {row.port:>18} seed={row.seed} {flag}: "
+              f"{result['outcome']:<10} steps={result['steps']:<5} "
+              f"min_range={result['min_range_m']:6.2f} m  "
+              f"eval={result['eval_outcome'] or '-'}", flush=True)
+    return results
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Film manifest rows with an RL checkpoint.")
+    parser.add_argument("--manifest", required=True, type=Path)
+    parser.add_argument("--out", required=True, type=Path, help="Root of the rollouts directory.")
+    parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT)
+    parser.add_argument("--views", default=DEFAULT_VIEWS)
+    parser.add_argument("--stride", type=int, default=1,
+                        help="Keep every STRIDEth frame of the clips.")
+    parser.add_argument("--force", action="store_true", help="Refilm rows that already have clips.")
+    parser.add_argument("--only", nargs="*", default=[],
+                        help="Row names to film; default all rl rows.")
+    parser.add_argument("--evals", type=Path, default=DEFAULT_EVALS,
+                        help="eval_matrix drop whose episodes.csv outcome is printed "
+                             "beside each row.")
+    parser.add_argument("--no-render", action="store_true", help="Write the trajectory file only.")
+    parser.add_argument("--gpu-index", type=int, default=None,
+                        help="Which GPU to render on; OWM_ENVS_GPU_INDEX otherwise.")
+    args = parser.parse_args(argv)
+    if args.stride < 1:
+        parser.error(f"--stride must be >= 1, got {args.stride}")
+    if not args.no_render:
+        select_gpu(args.gpu_index)
+    run_film(args.manifest, args.out, args.checkpoint, args.views, args.stride, args.force,
+             list(args.only), args.evals, not args.no_render)
+
+
+if __name__ == "__main__":
+    main()
