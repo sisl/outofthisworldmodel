@@ -80,6 +80,10 @@ compare RUN_A RUN_B *ARGS:
 film MANIFEST OUT *ARGS:
     uv run python -m owm.baselines.rl.film --manifest {{MANIFEST}} --out {{OUT}} {{ARGS}}
 
+# Tag a port's candidate seeds by lighting and by their recorded eval outcomes
+scout PORT *ARGS:
+    uv run python -m owm.baselines.rl.scout --port {{PORT}} {{ARGS}}
+
 # Create a wandb sweep from sweeps/<SWEEP>.yaml; prints the sweep id
 sweep-init SWEEP:
     uv run wandb sweep --entity "$WANDB_ENTITY" --project "$WANDB_PROJECT" \
