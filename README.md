@@ -347,7 +347,7 @@ produced the policy. A checkpoint outlives the directory it came out of, so
 name it for what it is —
 
 ```bash
-just promote runs/ppo_70M_near --name owm-iss-numerical-v1-coop-ppo-vector \
+just promote runs/ppo_70M_near --name owm-<env>-<goal>-<algo>-<obs> \
     --repo-id sislaboratory/owm-rl-baselines
 ```
 

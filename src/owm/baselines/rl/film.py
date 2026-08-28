@@ -75,6 +75,8 @@ EVAL_DROPS: dict[str, tuple[Path, ...]] = {
 # The drops record how an episode ended as flags beside a coarser `outcome`,
 # and in this order.
 EVAL_FLAG_COLUMNS = ("env_docked", "escaped", "ever_collided")
+# What makes a filmed row on disk the row a request is asking for.
+IDENTITY_KEYS = ("port", "seed", "rate_hz", "action_repeat", "produced_by")
 PLOT_PNG = f"{METHOD}_traj.png"
 PLOT_MP4 = f"{METHOD}_traj.mp4"
 # The overhead plot is a slow read of the approach rather than a replay of it,
@@ -192,8 +194,18 @@ def fly_episode(
     )
 
 
-def _csv_bool(value: str) -> bool:
-    return value.strip().lower() == "true"
+def _csv_bool(column: str, value: str) -> bool:
+    """One flag column of a drop as a bool, refusing anything it cannot read.
+
+    A silent `False` for an unrecognised spelling would turn a collision into
+    a truncation in the printed comparison, which is exactly the distinction
+    the column exists to make.
+    """
+    parsed = {"true": True, "false": False}.get(value.strip().casefold())
+    if parsed is None:
+        raise ValueError(
+            f"eval drop column {column!r} holds {value!r}, expected True or False")
+    return parsed
 
 
 def eval_outcome(evals_dir: str | Path | None, port: str, seed: int) -> str | None:
@@ -216,9 +228,12 @@ def eval_outcome(evals_dir: str | Path | None, port: str, seed: int) -> str | No
     with path.open() as handle:
         for record in csv.DictReader(handle):
             if record["port"] == port and int(record["seed"]) == seed:
-                if all(column in record for column in EVAL_FLAG_COLUMNS):
+                flags = {column: record.get(column) for column in EVAL_FLAG_COLUMNS}
+                # A row cut short leaves its trailing columns unset; the drop
+                # still knows its own coarse outcome, so fall back to that.
+                if all(flags.values()):
                     return classify_outcome(
-                        *(_csv_bool(record[column]) for column in EVAL_FLAG_COLUMNS))
+                        *(_csv_bool(column, value) for column, value in flags.items()))
                 return record["outcome"]
     return None
 
@@ -259,8 +274,22 @@ def _requested_identity(row: RolloutRow, checkpoint: str) -> dict:
         "seed": int(row.seed),
         "rate_hz": float(row.rl.rate_hz),
         "action_repeat": int(row.rl.action_repeat),
-        "produced_by": str(checkpoint),
+        "produced_by": str(Path(checkpoint).resolve()),
     }
+
+
+def _stored_identity(stored: dict) -> dict:
+    """The same fields out of a stored `meta.json`, spelled comparably.
+
+    `produced_by` is resolved against the working directory because the same
+    checkpoint reached as `runs/best/...` and as an absolute path is one
+    policy, and a row filmed under either spelling answers a request made
+    under the other.
+    """
+    identity = {key: stored.get(key) for key in IDENTITY_KEYS}
+    if identity["produced_by"]:
+        identity["produced_by"] = str(Path(identity["produced_by"]).resolve())
+    return identity
 
 
 def film_row(
@@ -292,9 +321,10 @@ def film_row(
     if not force and all(path.exists() for path in row_outputs(directory, views, render)):
         stored = json.loads((directory / META_FILE).read_text())
         wanted = _requested_identity(row, checkpoint)
-        differing = [key for key, value in wanted.items() if stored.get(key) != value]
+        on_disk = _stored_identity(stored)
+        differing = [key for key, value in wanted.items() if on_disk[key] != value]
         if differing:
-            detail = "; ".join(f"{key}: on disk {stored.get(key)!r}, requested {wanted[key]!r}"
+            detail = "; ".join(f"{key}: on disk {on_disk[key]!r}, requested {wanted[key]!r}"
                                for key in differing)
             raise SystemExit(
                 f"row '{row.name}' in {directory} was flown with a different "
@@ -344,7 +374,9 @@ def run_film(
             raise SystemExit(
                 f"--only names rows with no rl entry or not in the manifest: {unknown}")
         rows = [row for row in rows if row.name in only]
-    ckpt = resolve_checkpoint(str(checkpoint))
+    # Resolved before it is recorded, so `produced_by` is one spelling of the
+    # policy whatever spelling the caller used to name it.
+    ckpt = resolve_checkpoint(str(checkpoint)).resolve()
     run_dir = run_dir_for(ckpt, None)
     run_cfg = load_run_config(run_dir)
     base = base_env_conf(run_dir, run_cfg)

@@ -18,10 +18,12 @@ from owm.baselines.rl.film import (
     PAPER_EVALS,
     classify_outcome,
     eval_outcome,
+    film_row,
     fly_episode,
     resolve_evals,
     run_film,
 )
+from owm.baselines.rl.manifest import load_manifest
 from owm.baselines.rl.run_state import FINAL_MODEL, load_run_config
 from owm.baselines.rl.train import ALGOS, run_training
 
@@ -232,3 +234,42 @@ def test_summary_prints_the_collision_flag(trained_run, tmp_path, capsys):
                        views="fpv", render=False, max_steps=40)
     expected = "Y" if results[0]["ever_collided"] else "N"
     assert f"collided={expected}" in capsys.readouterr().out
+
+
+def test_eval_outcome_falls_back_when_a_flag_column_is_absent(tmp_path):
+    (tmp_path / "episodes.csv").write_text(
+        "port,split,trial,seed,steps,outcome,env_docked,ever_collided,escaped\n"
+        f"{PORT},train,0,100000,360,truncated\n"
+        f"{PORT},train,1,100001,360,escaped,,,\n"
+    )
+    # A row cut short, and one whose flags are blank: the coarse outcome stands.
+    assert eval_outcome(tmp_path, PORT, 100000) == "truncated"
+    assert eval_outcome(tmp_path, PORT, 100001) == "escaped"
+
+
+def test_eval_outcome_refuses_a_flag_it_cannot_read(tmp_path):
+    (tmp_path / "episodes.csv").write_text(
+        "port,seed,outcome,env_docked,ever_collided,escaped\n"
+        f"{PORT},100000,truncated,yes,False,False\n"
+    )
+    with pytest.raises(ValueError, match="env_docked"):
+        eval_outcome(tmp_path, PORT, 100000)
+
+
+def test_skip_matches_a_checkpoint_named_two_ways(trained_run, tmp_path, monkeypatch):
+    manifest = _one_row_manifest(tmp_path)
+    out = tmp_path / "rollouts"
+    ckpt = trained_run / FINAL_MODEL
+    run_film(manifest, out, str(ckpt), views="fpv", render=False, max_steps=40)
+    meta_path = out / "a" / "meta.json"
+    assert Path(json.loads(meta_path.read_text())["produced_by"]).is_absolute()
+    # The same checkpoint named relative to the working directory is the same
+    # policy, so the row it produced still answers a request spelled absolutely.
+    monkeypatch.chdir(trained_run.parent)
+    meta = json.loads(meta_path.read_text())
+    meta["produced_by"] = str(Path(trained_run.name) / FINAL_MODEL)
+    meta_path.write_text(json.dumps(meta))
+    row = load_manifest(manifest)[0]
+    result = film_row(row, model=None, vecnorm=None, base={}, out_root=out,
+                      checkpoint=str(ckpt.resolve()), views="fpv", render=False)
+    assert result["skipped"] is True
