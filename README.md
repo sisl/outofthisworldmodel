@@ -277,6 +277,36 @@ measures what each is worth at the rate the system will actually run. The first
 flatters the baseline, the second flatters whichever policy was trained at
 20 Hz; neither is the comparison on its own.
 
+## Filming episodes for the presentations
+
+`just scout PORT` tags a port's evaluation seeds by the lighting the 360 s
+approach flies through (`sunlit`, `eclipse`, `transition`) and prints the
+outcome each eval drop recorded for the same seed, so a manifest row can be
+picked for a known result. `just film MANIFEST OUT` then flies every row of
+the presentation manifest that has an `rl` entry, from the same reset
+`eval_matrix` used, writing `OUT/<name>/trajectory.npz` + `meta.json` and,
+through owm-envs, `rl_fpv.mp4`, `rl_iso.mp4`, `rl_traj.png`, `rl_traj.mp4`.
+
+    just scout poisk_zenith
+    just film ../amos_2026_presentations/media/manifest.yaml \
+        ../amos_2026_presentations/media/rollouts --gpu-index 3
+
+Rows fly at the manifest's `rate_hz`/`action_repeat` (20 Hz integration with
+the policy's 1 Hz decisions held for 20 steps), which is what makes the truth
+video smooth; the 1 Hz evaluation outcome is printed beside each row for
+comparison, and `meta.json.start_fingerprint` matches the evaluation's.
+
+`meta.json.produced_by` names the checkpoint the row was flown with, so a
+directory filmed over two sessions with two policies can be told apart after
+the fact. The `eval=` column is the paper's evaluation drop for the same
+`(port, seed)`, read through the drop's `env_docked`/`escaped`/`ever_collided`
+flags so it lands in the same vocabulary the film's own outcome uses -- a drop
+never says `collision`, it says `truncated` beside a collision flag. Rows
+already on disk are skipped, but only after their stored port, seed, cadence
+and checkpoint are checked against the manifest: change a row's seed or
+`rate_hz`/`action_repeat`, or point `--checkpoint` at another policy, and the
+run stops naming the mismatch until `--force` refilms it.
+
 ## Promoting a run's best checkpoint
 
 A finished run's best policy is not its last one — PPO's entropy collapses
@@ -317,7 +347,7 @@ produced the policy. A checkpoint outlives the directory it came out of, so
 name it for what it is —
 
 ```bash
-just promote runs/ppo_70M_near --name owm-iss-numerical-v1-coop-ppo-vector \
+just promote runs/ppo_70M_near --name owm-<env>-<goal>-<algo>-<obs> \
     --repo-id sislaboratory/owm-rl-baselines
 ```
 
