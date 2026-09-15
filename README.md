@@ -11,7 +11,8 @@ follow-up plan alongside the world-model side.
 - **quickdraw** (world-model library) is planned as a pinned git dependency
   for the world-model side; it is not yet in `pyproject.toml` — integration
   lands in a follow-up plan alongside the owm-v1 and dreamer-v3
-  implementations.
+  implementations. The published ISS-docking world models and their exact
+  training recipe are documented in [`docs/world_models.md`](docs/world_models.md).
 - **owm-envs** ships the ISS docking environments — `iss`, `iss-hcw` and
   `iss-numerical`, which differ in the dynamics they fly the same task under —
   and their 3D render assets, and is pinned as a git dependency in
